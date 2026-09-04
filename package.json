@@ -1,0 +1,27 @@
+{
+  "name": "happy_chat",
+  "version": "1.0.0",
+  "description": "HappyChat - 类微信/QQ 点对点聊天应用",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n tunnel,backend,frontend -c magenta,cyan,green \"npm run tunnel\" \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:local": "concurrently -n backend,frontend -c cyan,green \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "tunnel": "node scripts/db-tunnel.js",
+    "predev:backend": "node scripts/kill-port.js 8080",
+    "dev:backend": "cd backend && npx nodemon src/app.js",
+    "dev:frontend": "cd frontend && npm run dev:h5",
+    "install:all": "cd backend && npm install && cd ../frontend && npm install",
+    "start": "npm run dev",
+    "test:mongo": "cd backend && node test_mongo.js",
+    "deploy": "node scripts/deploy.js",
+    "rollback": "node scripts/rollback.js",
+    "build": "cd frontend && npm run build:h5"
+  },
+  "devDependencies": {
+    "chalk": "^4.1.2",
+    "concurrently": "^8.2.2",
+    "dotenv": "^16.3.1",
+    "node-ssh": "^13.2.1",
+    "ora": "^5.4.1"
+  }
+}
