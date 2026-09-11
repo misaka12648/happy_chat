@@ -9,7 +9,7 @@
     <!-- 头部 -->
     <view class="header">
       <view class="back-btn" @click="goLogin">
-        <uni-icons type="left" size="36rpx" color="#1A1A2E" />
+        <uni-icons type="left" size="36rpx" color="var(--color-nav-icon)" />
       </view>
       <text class="header-title">创建账号</text>
       <view class="header-placeholder"></view>
@@ -130,14 +130,19 @@ const handleRegister = async () => {
 };
 
 const goLogin = () => {
-  uni.navigateBack();
+  // 直接打开注册页（如刷新/分享链接）时页面栈为空，navigateBack 无效，兜底跳登录页
+  const pages = getCurrentPages();
+  if (pages.length > 1) {
+    uni.navigateBack();
+  } else {
+    uni.reLaunch({ url: '/pages/login/login' });
+  }
 };
 </script>
 
 <style scoped>
 .register-container {
   min-height: 100vh;
-  background: linear-gradient(135deg, #FAF9F7 0%, #F5F3F0 100%);
   padding: 0 40rpx;
   padding-top: 20rpx;
   position: relative;
@@ -196,7 +201,7 @@ const goLogin = () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.8);
+  background: var(--color-card);
   border-radius: 20rpx;
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
@@ -215,13 +220,13 @@ const goLogin = () => {
 /* 表单卡片 */
 .form-card {
   width: 100%;
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--color-card);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-radius: 32rpx;
   padding: 48rpx 40rpx;
   box-shadow: 0 8rpx 40rpx rgba(0, 0, 0, 0.06);
-  border: 1rpx solid rgba(255, 255, 255, 0.8);
+  border: 1rpx solid var(--glass-border);
   position: relative;
   z-index: 1;
   animation: slideUp 0.6s ease-out;

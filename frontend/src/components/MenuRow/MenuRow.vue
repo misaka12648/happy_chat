@@ -4,7 +4,7 @@
       <uni-icons :type="icon" :size="iconSize" :color="iconColor" />
     </view>
     <text class="menu-text">{{ text }}</text>
-    <uni-icons v-if="showArrow" class="menu-arrow" type="forward" size="20" color="#9CA3AF" />
+    <uni-icons v-if="showArrow" class="menu-arrow" type="forward" size="20" color="var(--color-icon-muted)" />
   </view>
 </template>
 

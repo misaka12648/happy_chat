@@ -1,12 +1,12 @@
 <template>
   <view class="app-avatar" :style="avatarStyle">
-    <image v-if="src" class="app-avatar__img" :src="src" mode="aspectFill" />
+    <image v-if="src && !imgError" class="app-avatar__img" :src="src" mode="aspectFill" @error="onImgError" />
     <text v-else class="app-avatar__text" :style="{ fontSize }">{{ text }}</text>
   </view>
 </template>
 
 <script setup>
-import { computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 
 const props = defineProps({
   // 头像图片地址（调用方需自行 getMediaUrl 处理）
@@ -29,11 +29,16 @@ const props = defineProps({
   blur: { type: Boolean, default: false }
 });
 
+// 图片加载失败时回退到渐变底 + 占位字，避免裂图露白
+const imgError = ref(false);
+const onImgError = () => { imgError.value = true; };
+watch(() => props.src, () => { imgError.value = false; });
+
 const avatarStyle = computed(() => ({
   width: props.size,
   height: props.size,
   borderRadius: props.radius,
-  background: props.src ? 'transparent' : props.background,
+  background: props.src && !imgError.value ? 'transparent' : props.background,
   boxShadow: props.shadow,
   border: props.border,
   backdropFilter: props.blur ? 'blur(20px)' : undefined,

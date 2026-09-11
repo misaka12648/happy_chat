@@ -102,7 +102,6 @@ const goRegister = () => {
 <style scoped>
 .login-container {
   min-height: 100vh;
-  background: linear-gradient(135deg, #FAF9F7 0%, #F5F3F0 100%);
   padding: 0 40rpx;
   padding-top: 20rpx;
   position: relative;
@@ -207,13 +206,13 @@ const goRegister = () => {
 /* 表单卡片 */
 .form-card {
   width: 100%;
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--color-card);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-radius: 32rpx;
   padding: 48rpx 40rpx;
   box-shadow: 0 8rpx 40rpx rgba(0, 0, 0, 0.06);
-  border: 1rpx solid rgba(255, 255, 255, 0.8);
+  border: 1rpx solid var(--glass-border);
   position: relative;
   z-index: 1;
   animation: slideUp 0.6s ease-out;

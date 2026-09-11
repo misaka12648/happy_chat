@@ -96,6 +96,14 @@ export const useContactsStore = defineStore('contacts', {
       if (idx !== -1) {
         this.friends[idx].online = online;
       }
+    },
+
+    // 资料卡保存备注后 → 就地更新
+    setRemark(friendId, remark) {
+      const idx = this.friends.findIndex(f => f._id === friendId);
+      if (idx !== -1) {
+        this.friends[idx].remark = remark;
+      }
     }
   }
 });

@@ -29,6 +29,11 @@ class WebSocketClient {
       console.error('未找到 token，无法连接 WebSocket');
       return;
     }
+    // 防重入：上一轮连接尚未结束时忽略新的 connect 调用（否则新旧连接互相关闭形成重连风暴）
+    if (this._connecting) {
+      return;
+    }
+    this._connecting = true;
 
     // 重置重连上限（disconnect 会设为 0，再次 connect 时需恢复）
     if (this.maxReconnectAttempts === 0) {
@@ -37,16 +42,19 @@ class WebSocketClient {
 
     if (this.socket) {
       this.socket.close();
+      this.socket = null;
     }
 
-    this.socket = uni.connectSocket({
+    const task = uni.connectSocket({
       url: `${BASE_URL}?token=${token}`,
       success: () => {
         console.log('WebSocket 连接中...');
       }
     });
+    this.socket = task;
 
-    this.socket.onOpen(() => {
+    task.onOpen(() => {
+      this._connecting = false;
       const wasReconnecting = this.reconnectAttempts > 0;
       console.log('WebSocket 已连接', wasReconnecting ? '(重连成功)' : '');
       this.isConnected = true;
@@ -63,7 +71,7 @@ class WebSocketClient {
       }
     });
 
-    this.socket.onMessage((res) => {
+    task.onMessage((res) => {
       try {
         const message = JSON.parse(res.data);
         this.handleMessage(message);
@@ -72,7 +80,10 @@ class WebSocketClient {
       }
     });
 
-    this.socket.onClose((res) => {
+    task.onClose((res) => {
+      this._connecting = false;
+      // 仅当前连接的关闭才触发重连：被 connect()/disconnect() 接管的旧连接不参与
+      if (this.socket !== task) return;
       console.log('WebSocket 已断开', res && res.code ? `(code: ${res.code})` : '');
       this.isConnected = false;
       this.stopHeartbeat();
@@ -84,7 +95,7 @@ class WebSocketClient {
       }
     });
 
-    this.socket.onError((err) => {
+    task.onError((err) => {
       console.error('WebSocket 错误:', err);
       this.isConnected = false;
     });
@@ -161,7 +172,7 @@ class WebSocketClient {
   /**
    * 发送聊天消息
    */
-  sendMessage(conversationId, receiverId, content, messageType = 'TEXT', mediaUrl = '', thumbnailUrl = '', contentBlocks = [], replyInfo = null, clientId = '') {
+  sendMessage(conversationId, receiverId, content, messageType = 'TEXT', mediaUrl = '', thumbnailUrl = '', contentBlocks = [], replyInfo = null, clientId = '', duration = 0) {
     return this.send('SEND_MESSAGE', {
       conversationId,
       receiverId,
@@ -171,7 +182,8 @@ class WebSocketClient {
       thumbnailUrl,
       contentBlocks,
       replyInfo,
-      clientId
+      clientId,
+      duration
     });
   }
 
@@ -252,12 +264,13 @@ class WebSocketClient {
    */
   disconnect() {
     this.stopHeartbeat();
-    
+    this._connecting = false;
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    
+
     this.maxReconnectAttempts = 0; // 阻止重连
     
     if (this.socket) {

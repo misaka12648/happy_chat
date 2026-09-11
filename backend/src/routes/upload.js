@@ -3,8 +3,26 @@ const router = express.Router();
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const sharp = require('sharp');
 const { ok, fail } = require('../utils/response');
+
+// 文件名扩展名由服务端按 mimetype 映射生成，不信任客户端原始文件名，
+// 防止伪造 mimetype 上传 .html/.svg 等可执行内容形成同源存储型 XSS。
+const EXT_BY_MIME = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+  'video/quicktime': '.mov',
+  'audio/webm': '.webm',
+  'audio/mpeg': '.mp3',
+  'audio/mp4': '.m4a',
+  'audio/ogg': '.ogg',
+  'audio/wav': '.wav'
+};
 
 // 配置 multer 存储
 const storage = multer.diskStorage({
@@ -17,10 +35,9 @@ const storage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    // 生成唯一文件名
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    cb(null, uniqueSuffix + ext);
+    // 随机文件名 + 白名单扩展名（fileFilter 已保证 mimetype 在白名单内）
+    const ext = EXT_BY_MIME[file.mimetype] || '.bin';
+    cb(null, crypto.randomBytes(16).toString('hex') + ext);
   }
 });
 
@@ -34,7 +51,12 @@ const fileFilter = (req, file, cb) => {
     'image/webp',
     'video/mp4',
     'video/webm',
-    'video/quicktime'
+    'video/quicktime',
+    'audio/webm',
+    'audio/mpeg',
+    'audio/mp4',
+    'audio/ogg',
+    'audio/wav'
   ];
 
   if (allowedTypes.includes(file.mimetype)) {
@@ -65,13 +87,15 @@ router.post('/', upload.single('file'), async (req, res) => {
 
     // 构建文件访问 URL
     const fileUrl = `/media/${req.file.filename}`;
-    
+
     // 确定文件类型
     let fileType = 'IMAGE';
     let thumbnailUrl = '';
-    
+
     if (req.file.mimetype.startsWith('video/')) {
       fileType = 'VIDEO';
+    } else if (req.file.mimetype.startsWith('audio/')) {
+      fileType = 'VOICE';
     } else if (req.file.mimetype.startsWith('image/')) {
       // 生成压缩缩略图
       try {

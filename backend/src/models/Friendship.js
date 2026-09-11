@@ -15,6 +15,12 @@ const friendshipSchema = new mongoose.Schema({
     type: String,
     enum: ['PENDING', 'ACCEPTED', 'REJECTED'],
     default: 'PENDING'
+  },
+  // 好友备注：key 为设置备注的用户 ID，value 为其对好友的备注文本（每人独立，互不影响）
+  remarks: {
+    type: Map,
+    of: String,
+    default: {}
   }
 }, {
   timestamps: true

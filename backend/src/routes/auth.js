@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
 const { generateAccessToken, generateRefreshToken, verifyRefreshToken } = require('../utils/jwt');
+const { decodeTransportPassword } = require('../utils/password');
 const { ok, fail } = require('../utils/response');
 
 /**
@@ -10,9 +11,11 @@ const { ok, fail } = require('../utils/response');
  */
 router.post('/register', async (req, res) => {
   try {
-    const { username, password: encodedPassword, nickname } = req.body;
-    // 密码解码：移除前缀 + 反转 + base64解码
-    const password = Buffer.from(encodedPassword.replace('HC_', '').split('').reverse().join(''), 'base64').toString('utf-8');
+    const { username, nickname } = req.body;
+    const password = decodeTransportPassword(req.body.password);
+    if (!password) {
+      return fail(res, 400, '密码格式错误');
+    }
 
     // 参数验证
     if (!username || !password) {
@@ -59,9 +62,11 @@ router.post('/register', async (req, res) => {
  */
 router.post('/login', async (req, res) => {
   try {
-    const { username, password: encodedPassword } = req.body;
-    // 密码解码：移除前缀 + 反转 + base64解码
-    const password = Buffer.from(encodedPassword.replace('HC_', '').split('').reverse().join(''), 'base64').toString('utf-8');
+    const { username } = req.body;
+    const password = decodeTransportPassword(req.body.password);
+    if (!password) {
+      return fail(res, 400, '密码格式错误');
+    }
 
     // 参数验证
     if (!username || !password) {

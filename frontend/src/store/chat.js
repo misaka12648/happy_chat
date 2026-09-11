@@ -6,10 +6,19 @@ import { useUserStore } from '@/store/user';
 // 不放进 state，避免响应式包裹 Promise。
 let conversationsInFlight = null;
 
+// 会话排序：置顶优先，其余按最后消息时间倒序（与服务端列表排序规则一致）
+const sortConversations = (list) => {
+  list.sort((a, b) => {
+    if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+    return new Date(b.lastMessageTime) - new Date(a.lastMessageTime);
+  });
+};
+
 export const useChatStore = defineStore('chat', {
   state: () => ({
     conversations: [],
     currentConversation: null,
+
     // 按会话缓存消息记录（含分页游标），避免每次进入详情页重新请求
     // 结构：{ [conversationId]: { messages: [], page: number, hasMore: boolean } }
     messageCache: {},
@@ -43,6 +52,7 @@ export const useChatStore = defineStore('chat', {
           const res = await get('/api/conversations', null, { silent: true });
           if (res.code === 200) {
             this.conversations = res.data;
+            sortConversations(this.conversations);
             this.lastFetched = Date.now();
           }
         } catch (error) {
@@ -139,11 +149,35 @@ export const useChatStore = defineStore('chat', {
         if (isIncoming && (!this.currentConversation || this.currentConversation._id !== conversationId)) {
           this.conversations[index].unreadCount = (this.conversations[index].unreadCount || 0) + 1;
         }
-        
-        // 将会话移到顶部
-        const conversation = this.conversations.splice(index, 1)[0];
-        this.conversations.unshift(conversation);
+
+        // 重新排序：置顶优先，其余按时间倒序（替换原先的一律置顶 unshift）
+        sortConversations(this.conversations);
       }
+    },
+
+    /**
+     * 置顶 / 取消置顶（仅当前用户视角，服务端持久化）
+     */
+    async pinConversation(conversationId, pinned) {
+      const res = await put(`/api/conversations/${conversationId}/pin`, { pinned }, { silent: true });
+      if (res.code === 200) {
+        const conv = this.conversations.find(c => c._id === conversationId);
+        if (conv) conv.pinned = pinned;
+        sortConversations(this.conversations);
+      }
+      return res;
+    },
+
+    /**
+     * 开启 / 关闭免打扰（仅当前用户视角，服务端持久化）
+     */
+    async muteConversation(conversationId, muted) {
+      const res = await put(`/api/conversations/${conversationId}/mute`, { muted }, { silent: true });
+      if (res.code === 200) {
+        const conv = this.conversations.find(c => c._id === conversationId);
+        if (conv) conv.muted = muted;
+      }
+      return res;
     },
 
     /**
@@ -173,6 +207,11 @@ export const useChatStore = defineStore('chat', {
         this.currentConversation = null;
       }
     },
+
+    /**
+     * 标记"对方正在输入"（2.5s 无续期自动清除）
+     */
+
 
     /**
      * 离开会话：缓存消息记录（含分页游标）并重置当前会话

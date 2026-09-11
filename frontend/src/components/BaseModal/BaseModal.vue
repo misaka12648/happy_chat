@@ -1,6 +1,7 @@
 <template>
-  <view v-if="visible" class="base-modal-mask" :style="{ zIndex }" @click="onMaskClick">
-    <view class="base-modal" :style="{ width }" @click.stop>
+  <transition name="base-modal" :duration="{ enter: 250, leave: 200 }">
+    <view v-if="visible" class="base-modal-mask" :style="{ zIndex }" @click="onMaskClick">
+      <view class="base-modal" :style="{ width }" @click.stop>
       <!-- 头部：优先使用 header 插槽，否则渲染 title -->
       <view v-if="hasHeaderSlot || title" class="base-modal-header">
         <slot name="header">
@@ -15,26 +16,27 @@
         </slot>
       </view>
 
-      <!-- 底部：优先使用 footer 插槽，否则渲染标准按钮 -->
-      <slot name="footer">
-        <view class="base-modal-footer">
-          <view
-            v-if="showCancel"
-            class="base-modal-btn base-modal-btn-cancel"
-            @click="onCancel"
-          >
-            <text class="base-modal-btn-text">{{ cancelText }}</text>
+        <!-- 底部：优先使用 footer 插槽，否则渲染标准按钮 -->
+        <slot name="footer">
+          <view class="base-modal-footer">
+            <view
+              v-if="showCancel"
+              class="base-modal-btn base-modal-btn-cancel"
+              @click="onCancel"
+            >
+              <text class="base-modal-btn-text">{{ cancelText }}</text>
+            </view>
+            <view
+              class="base-modal-btn base-modal-btn-confirm"
+              @click="onConfirm"
+            >
+              <text class="base-modal-btn-text base-modal-btn-text-confirm">{{ confirmText }}</text>
+            </view>
           </view>
-          <view
-            class="base-modal-btn base-modal-btn-confirm"
-            @click="onConfirm"
-          >
-            <text class="base-modal-btn-text base-modal-btn-text-confirm">{{ confirmText }}</text>
-          </view>
-        </view>
-      </slot>
+        </slot>
+      </view>
     </view>
-  </view>
+  </transition>
 </template>
 
 <script setup>
@@ -98,11 +100,33 @@ const onConfirm = () => {
 }
 
 .base-modal {
-  background: rgba(255, 255, 255, 0.98);
+  background: var(--color-modal);
   border-radius: 32rpx;
   overflow: hidden;
   box-shadow: 0 20rpx 60rpx rgba(0, 0, 0, 0.2);
   animation: modalIn 0.25s ease;
+}
+
+/* 进出场过渡：遮罩淡入淡出，弹窗缩放进出场 */
+.base-modal-enter-active {
+  transition: opacity 0.25s ease;
+}
+
+.base-modal-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.base-modal-enter-from,
+.base-modal-leave-to {
+  opacity: 0;
+}
+
+.base-modal-enter-active .base-modal {
+  animation: modalIn 0.25s ease;
+}
+
+.base-modal-leave-active .base-modal {
+  animation: modalOut 0.2s ease forwards;
 }
 
 @keyframes modalIn {
@@ -113,6 +137,17 @@ const onConfirm = () => {
   to {
     opacity: 1;
     transform: scale(1);
+  }
+}
+
+@keyframes modalOut {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.92);
   }
 }
 

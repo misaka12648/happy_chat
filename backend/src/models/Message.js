@@ -14,16 +14,22 @@ const messageSchema = new mongoose.Schema({
   receiver: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    // 群聊消息无单一接收者，仅私聊必填
+    default: null
   },
   type: {
     type: String,
-    enum: ['TEXT', 'IMAGE', 'VIDEO', 'RICH'],
+    enum: ['TEXT', 'IMAGE', 'VIDEO', 'RICH', 'VOICE'],
     default: 'TEXT'
   },
   content: {
     type: String,
     required: true
+  },
+  // 语音时长（秒，仅 VOICE 消息使用）
+  duration: {
+    type: Number,
+    default: 0
   },
   mediaUrl: {
     type: String,

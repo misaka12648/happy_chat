@@ -2,7 +2,7 @@
   <view class="search-bar-outer">
     <view class="search-bar-inner">
       <view class="search-input-wrapper" :style="{ height: inputHeight }">
-        <uni-icons class="search-icon" type="search" size="28rpx" color="#9CA3AF" />
+        <uni-icons class="search-icon" type="search" size="28rpx" color="var(--color-icon-muted)" />
         <input
           class="search-input"
           type="text"
@@ -50,7 +50,7 @@ const onSearch = () => {
 <style scoped>
 .search-bar-outer {
   padding: 20rpx 30rpx;
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--color-nav);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   position: sticky;
@@ -68,9 +68,10 @@ const onSearch = () => {
   flex: 1;
   display: flex;
   align-items: center;
-  background: var(--color-bg);
-  border-radius: 20rpx;
+  background: var(--color-input-bg);
+  border-radius: 999rpx;
   padding: 0 24rpx;
+  box-shadow: inset 0 2rpx 6rpx rgba(0, 0, 0, 0.03);
 }
 
 .search-icon {
@@ -91,7 +92,7 @@ const onSearch = () => {
 .search-btn {
   padding: 0 32rpx;
   background: var(--gradient-primary);
-  border-radius: 20rpx;
+  border-radius: 999rpx;
   display: flex;
   align-items: center;
   justify-content: center;

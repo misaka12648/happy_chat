@@ -27,6 +27,13 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  // 个性签名：展示于个人资料卡，50 字以内
+  bio: {
+    type: String,
+    default: '',
+    trim: true,
+    maxlength: 50
+  },
   online: {
     type: Boolean,
     default: false

@@ -36,6 +36,7 @@
           <template v-else>
             <text class="nickname">{{ userInfo.nickname || userInfo.username || '未登录' }}</text>
             <text class="username" v-if="userInfo.username">@{{ userInfo.username }}</text>
+            <text class="user-bio" v-if="userInfo.bio">{{ userInfo.bio }}</text>
           </template>
         </view>
       </view>
@@ -54,23 +55,35 @@
             text="编辑资料"
             @click="editProfile"
           />
-          
+
           <view class="menu-divider"></view>
-          
+
           <MenuRow
             icon="notification"
             icon-color="#A78BFA"
             icon-bg="rgba(167, 139, 250, 0.1)"
             text="消息通知"
+            @click="handleNotificationSetting"
           />
-          
+
           <view class="menu-divider"></view>
-          
+
           <MenuRow
             icon="locked"
             icon-color="#34D399"
             icon-bg="rgba(52, 211, 153, 0.1)"
-            text="隐私安全"
+            text="修改密码"
+            @click="openPasswordModal"
+          />
+
+          <view class="menu-divider"></view>
+
+          <MenuRow
+            icon="color-filled"
+            icon-color="#818CF8"
+            icon-bg="rgba(129, 140, 248, 0.1)"
+            text="深色模式"
+            @click="handleToggleTheme"
           />
         </view>
       </view>
@@ -84,15 +97,17 @@
             icon-color="#FBBF24"
             icon-bg="rgba(251, 191, 36, 0.1)"
             text="给我们评分"
+            @click="handleRate"
           />
-          
+
           <view class="menu-divider"></view>
-          
+
           <MenuRow
             icon="info"
             icon-color="#38BDF8"
             icon-bg="rgba(56, 189, 248, 0.1)"
             text="关于 HappyChat"
+            @click="showAboutModal = true"
           />
         </view>
       </view>
@@ -119,12 +134,22 @@
     >
       <view class="edit-field">
         <text class="edit-label">昵称</text>
-        <input 
-          class="edit-input" 
-          v-model="editNickname" 
-          placeholder="请输入昵称" 
+        <input
+          class="edit-input"
+          v-model="editNickname"
+          placeholder="请输入昵称"
           placeholder-class="edit-input-placeholder"
-          maxlength="20" 
+          maxlength="20"
+        />
+      </view>
+      <view class="edit-field edit-field-gap">
+        <text class="edit-label">个性签名</text>
+        <input
+          class="edit-input"
+          v-model="editBio"
+          placeholder="介绍一下自己吧（50 字以内）"
+          placeholder-class="edit-input-placeholder"
+          maxlength="50"
           confirm-type="done"
           @confirm="confirmEdit"
         />
@@ -138,10 +163,11 @@
       width="640rpx"
       :mask-closable="false"
     >
-      <view class="crop-container" @touchstart="onTouchStart" @touchmove="onTouchMove" @touchend="onTouchEnd">
-        <image 
-          class="crop-image" 
-          :src="cropImageSrc" 
+      <view class="crop-container" @touchstart="onTouchStart" @touchmove="onTouchMove" @touchend="onTouchEnd"
+        @mousedown="onMouseDown" @mousemove="onMouseMove" @mouseup="onMouseUp" @mouseleave="onMouseUp">
+        <image
+          class="crop-image"
+          :src="cropImageSrc"
           :style="cropImageStyle"
           mode="scaleToFill"
           @load="onImageLoad"
@@ -187,14 +213,89 @@
       confirm-text="退出"
       @confirm="confirmLogout"
     />
+
+    <!-- 修改密码弹窗 -->
+    <BaseModal
+      v-model:visible="showPasswordModal"
+      title="修改密码"
+      confirm-text="保存"
+      :mask-closable="false"
+      @confirm="confirmChangePassword"
+    >
+      <view class="edit-field">
+        <text class="edit-label">旧密码</text>
+        <input
+          class="edit-input"
+          v-model="oldPassword"
+          type="password"
+          password
+          placeholder="请输入旧密码"
+          placeholder-class="edit-input-placeholder"
+          maxlength="64"
+        />
+      </view>
+      <view class="edit-field edit-field-gap">
+        <text class="edit-label">新密码</text>
+        <input
+          class="edit-input"
+          v-model="newPassword"
+          type="password"
+          password
+          placeholder="至少 6 位"
+          placeholder-class="edit-input-placeholder"
+          maxlength="64"
+        />
+      </view>
+      <view class="edit-field edit-field-gap">
+        <text class="edit-label">确认新密码</text>
+        <input
+          class="edit-input"
+          v-model="confirmPassword"
+          type="password"
+          password
+          placeholder="再次输入新密码"
+          placeholder-class="edit-input-placeholder"
+          maxlength="64"
+          confirm-type="done"
+          @confirm="confirmChangePassword"
+        />
+      </view>
+    </BaseModal>
+
+    <!-- 关于弹窗 -->
+    <BaseModal
+      v-model:visible="showAboutModal"
+      :show-cancel="false"
+      confirm-text="我知道了"
+      @confirm="showAboutModal = false"
+    >
+      <template #header>
+        <view class="about-icon-wrapper">
+          <text class="about-icon">💬</text>
+        </view>
+        <text class="about-title">HappyChat</text>
+        <text class="about-version">v1.0.0</text>
+      </template>
+      <view class="about-body">
+        <text class="about-line">与好友分享每一刻的点对点聊天应用</text>
+        <text class="about-line about-sub">uni-app + Vue 3 · Express + MongoDB · WebSocket</text>
+        <text class="about-line about-sub">基于 AGPL-3.0 协议开源</text>
+      </view>
+    </BaseModal>
   </view>
+
+  <!-- 全局通话覆盖层 -->
+  <CallOverlay />
 </template>
 
 <script setup>
+import CallOverlay from '@/components/CallOverlay/CallOverlay.vue';
 import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import { onShow } from '@dcloudio/uni-app';
 import { useUserStore } from '@/store/user';
 import { upload } from '@/utils/request';
+import { toggleNotifications } from '@/utils/notify';
+import { toggleTheme, getStoredTheme } from '@/utils/theme';
 import { getMediaUrl, getAvatarText } from '@/utils/format';
 import BaseModal from '@/components/BaseModal/BaseModal.vue';
 import AppAvatar from '@/components/AppAvatar/AppAvatar.vue';
@@ -206,9 +307,19 @@ const userInfo = ref({});
 // 编辑资料弹窗状态
 const showEditModal = ref(false);
 const editNickname = ref('');
+const editBio = ref('');
 
 // 退出登录确认弹窗状态
 const showLogoutModal = ref(false);
+
+// 修改密码弹窗状态
+const showPasswordModal = ref(false);
+const oldPassword = ref('');
+const newPassword = ref('');
+const confirmPassword = ref('');
+
+// 关于弹窗状态
+const showAboutModal = ref(false);
 
 // 裁切相关状态
 const showCropModal = ref(false);
@@ -281,6 +392,7 @@ onShow(async () => {
 
 const editProfile = () => {
   editNickname.value = userInfo.value.nickname || '';
+  editBio.value = userInfo.value.bio || '';
   showEditModal.value = true;
 };
 
@@ -290,8 +402,13 @@ const confirmEdit = async () => {
     uni.showToast({ title: '昵称不能为空', icon: 'none' });
     return;
   }
+  const bio = editBio.value.trim();
+  if (bio.length > 50) {
+    uni.showToast({ title: '签名不能超过 50 个字符', icon: 'none' });
+    return;
+  }
   showEditModal.value = false;
-  const result = await userStore.updateUserInfo({ nickname });
+  const result = await userStore.updateUserInfo({ nickname, bio });
   if (result.success) {
     userInfo.value = result.data;
     uni.showToast({ title: '修改成功', icon: 'success' });
@@ -305,6 +422,57 @@ const handleLogout = () => {
 const confirmLogout = () => {
   showLogoutModal.value = false;
   userStore.logout();
+};
+
+// ========== 修改密码 ==========
+const openPasswordModal = () => {
+  oldPassword.value = '';
+  newPassword.value = '';
+  confirmPassword.value = '';
+  showPasswordModal.value = true;
+};
+
+const confirmChangePassword = async () => {
+  if (!oldPassword.value || !newPassword.value || !confirmPassword.value) {
+    uni.showToast({ title: '请填写完整', icon: 'none' });
+    return;
+  }
+  if (newPassword.value.length < 6) {
+    uni.showToast({ title: '新密码长度应不少于6位', icon: 'none' });
+    return;
+  }
+  if (newPassword.value !== confirmPassword.value) {
+    uni.showToast({ title: '两次输入的新密码不一致', icon: 'none' });
+    return;
+  }
+  const result = await userStore.changePassword(oldPassword.value, newPassword.value);
+  if (result.success) {
+    showPasswordModal.value = false;
+    uni.showToast({ title: '密码修改成功', icon: 'success' });
+  }
+  // 失败提示（如"旧密码错误"）已由请求层统一 toast
+};
+
+// ========== 消息通知 / 评分 ==========
+const handleNotificationSetting = async () => {
+  const result = await toggleNotifications();
+  if (result.enabled) {
+    uni.showToast({ title: '已开启桌面通知', icon: 'success' });
+  } else if (!result.enabled && !result.reason) {
+    uni.showToast({ title: '已关闭桌面通知', icon: 'none' });
+  } else {
+    uni.showToast({ title: result.reason, icon: 'none' });
+  }
+};
+
+const handleRate = () => {
+  uni.showToast({ title: '感谢支持，敬请期待', icon: 'none' });
+};
+
+// ========== 深色模式 ==========
+const handleToggleTheme = () => {
+  const next = toggleTheme();
+  uni.showToast({ title: next === 'dark' ? '已切换至深色模式' : '已切换至浅色模式', icon: 'none' });
 };
 
 const changeAvatar = () => {
@@ -412,6 +580,27 @@ const onTouchMove = (e) => {
 };
 
 const onTouchEnd = () => {
+  isDragging.value = false;
+};
+
+// ========== 鼠标支持（桌面 H5）：拖动/滚轮已单独处理，这里补平移拖拽 ==========
+const onMouseDown = (e) => {
+  e.preventDefault(); // 阻止图片原生拖拽与文字选中
+  isDragging.value = true;
+  startX.value = e.clientX;
+  startY.value = e.clientY;
+  lastX.value = imageX.value;
+  lastY.value = imageY.value;
+};
+
+const onMouseMove = (e) => {
+  if (!isDragging.value) return;
+  imageX.value = lastX.value + (e.clientX - startX.value);
+  imageY.value = lastY.value + (e.clientY - startY.value);
+  clampTranslate();
+};
+
+const onMouseUp = () => {
   isDragging.value = false;
 };
 
@@ -528,7 +717,6 @@ const confirmCrop = async () => {
 <style scoped>
 .profile-page {
   min-height: 100vh;
-  background: var(--color-bg);
 }
 
 /* 头部渐变 */
@@ -614,6 +802,17 @@ const confirmCrop = async () => {
   color: rgba(255, 255, 255, 0.8);
 }
 
+/* 个性签名（资料卡头部，白色半透明） */
+.user-bio {
+  font-size: 24rpx;
+  color: rgba(255, 255, 255, 0.75);
+  margin-top: 8rpx;
+  max-width: 560rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* 头部加载/失败态（白色主题，适配渐变背景） */
 .header-status {
   display: flex;
@@ -680,13 +879,13 @@ const confirmCrop = async () => {
 }
 
 .menu-card {
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--color-card);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border-radius: 24rpx;
+  border-radius: 28rpx;
   overflow: hidden;
-  box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.04);
-  border: 1rpx solid rgba(255, 255, 255, 0.6);
+  box-shadow: var(--shadow-card);
+  border: 1rpx solid var(--glass-border);
 }
 
 .menu-divider {
@@ -703,7 +902,7 @@ const confirmCrop = async () => {
 .logout-btn {
   width: 100%;
   height: 96rpx;
-  background: rgba(255, 255, 255, 0.85);
+  background: var(--color-card);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-radius: 24rpx;
@@ -711,7 +910,7 @@ const confirmCrop = async () => {
   align-items: center;
   justify-content: center;
   box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.04);
-  border: 1rpx solid rgba(255, 255, 255, 0.6);
+  border: 1rpx solid var(--glass-border);
   transition: all 0.2s ease;
 }
 
@@ -741,6 +940,11 @@ const confirmCrop = async () => {
 .edit-field {
   display: flex;
   flex-direction: column;
+}
+
+/* 弹窗内多组输入之间的间距 */
+.edit-field-gap {
+  margin-top: 24rpx;
 }
 
 .edit-label {
@@ -871,5 +1075,53 @@ const confirmCrop = async () => {
 
 .crop-btn-confirm .crop-btn-text {
   color: #FFFFFF;
+}
+
+/* ========== 关于弹窗内容（外壳由 BaseModal 提供） ========== */
+.about-icon-wrapper {
+  width: 120rpx;
+  height: 120rpx;
+  background: linear-gradient(135deg, rgba(255, 107, 107, 0.1), rgba(167, 139, 250, 0.1));
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 24rpx;
+}
+
+.about-icon {
+  font-size: 56rpx;
+}
+
+.about-title {
+  font-size: 36rpx;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+.about-version {
+  font-size: 24rpx;
+  color: var(--color-text-tertiary);
+  margin-top: 4rpx;
+  display: block;
+}
+
+.about-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.about-line {
+  font-size: 28rpx;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+  text-align: center;
+}
+
+.about-sub {
+  font-size: 24rpx;
+  color: var(--color-text-tertiary);
+  margin-top: 8rpx;
 }
 </style>

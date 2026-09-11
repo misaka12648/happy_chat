@@ -1,6 +1,11 @@
 import { defineStore } from 'pinia';
 import { post, get, put } from '@/utils/request';
+import { encodePassword } from '@/utils/crypto';
 import wsClient from '@/utils/socket';
+import { registerNotificationHandler } from '@/utils/notify';
+import { useCallStore } from '@/store/call';
+import { useChatStore } from '@/store/chat';
+import { useContactsStore } from '@/store/contacts';
 
 // 模块级并发守卫：App.vue 启动与 profile 页同时拉取用户信息时复用同一请求，
 // 不放进 state，避免响应式包裹 Promise。
@@ -59,15 +64,16 @@ export const useUserStore = defineStore('user', {
      */
     async login(username, password) {
       try {
-        // 密码编码：base64 + 反转 + 前缀
-        const encodedPassword = 'HC_' + btoa(password).split('').reverse().join('');
-        const res = await post('/api/auth/login', { username, password: encodedPassword });
+        const res = await post('/api/auth/login', { username, password: encodePassword(password) });
         if (res.code === 200) {
           this.setToken(res.data.token);
           this.setRefreshToken(res.data.refreshToken);
           this.setUserInfo(res.data.user);
           // Connect WebSocket
           wsClient.connect();
+          // 登录后注册全局桌面通知与通话信令处理器（启动时注册的已随 disconnect 清空）
+          registerNotificationHandler();
+          useCallStore().registerCallHandlers();
           return { success: true, data: res.data };
         }
         return { success: false, message: res.msg };
@@ -81,18 +87,38 @@ export const useUserStore = defineStore('user', {
      */
     async register(username, password, nickname) {
       try {
-        // 密码编码：base64 + 反转 + 前缀
-        const encodedPassword = 'HC_' + btoa(password).split('').reverse().join('');
-        const res = await post('/api/auth/register', { username, password: encodedPassword, nickname });
+        const res = await post('/api/auth/register', { username, password: encodePassword(password), nickname });
         if (res.code === 201) {
           this.setToken(res.data.token);
           this.setRefreshToken(res.data.refreshToken);
           this.setUserInfo(res.data.user);
+          // 注册成功后立即进入与登录一致的实时会话状态，避免首条消息因 WS 未连接而失败
+          wsClient.connect();
+          registerNotificationHandler();
+          useCallStore().registerCallHandlers();
           return { success: true, data: res.data };
         }
         return { success: false, message: res.msg };
       } catch (error) {
         return { success: false, message: error.message || '注册失败' };
+      }
+    },
+
+    /**
+     * 修改密码（需验证旧密码；成功后当前 token 仍有效，无需重新登录）
+     */
+    async changePassword(oldPassword, newPassword) {
+      try {
+        const res = await put('/api/users/me/password', {
+          oldPassword: encodePassword(oldPassword),
+          newPassword: encodePassword(newPassword)
+        });
+        if (res.code === 200) {
+          return { success: true };
+        }
+        return { success: false, message: res.msg };
+      } catch (error) {
+        return { success: false, message: error.message || '修改失败' };
       }
     },
 
@@ -149,12 +175,22 @@ export const useUserStore = defineStore('user', {
 
     /**
      * 退出登录
+     * 顺序：先断开 WebSocket（避免登出后仍收推送的"幽灵连接"），
+     * 再重置业务 store（避免切换账号后残留上一账号的会话/好友数据），
+     * 最后清空本 store 与本地存储并跳转登录页。
      */
     logout() {
+      wsClient.disconnect();
+
+      // disconnect 会清空所有 WS 处理器，业务 store 一并归零
+      useChatStore().$reset();
+      useContactsStore().$reset();
+
       this.token = '';
       this.refreshToken = '';
       this.userInfo = null;
       this.isLoggedIn = false;
+      this.lastFetched = 0;
       uni.removeStorageSync('token');
       uni.removeStorageSync('refreshToken');
       uni.removeStorageSync('userInfo');

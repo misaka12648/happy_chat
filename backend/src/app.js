@@ -15,10 +15,14 @@ const uploadRoutes = require('./routes/upload');
 
 const { authenticateToken } = require('./middleware/auth');
 const { setupWebSocket } = require('./websocket');
-const { ok } = require('./utils/response');
+const { ok, fail } = require('./utils/response');
+const { createRateLimiter } = require('./utils/rateLimit');
 
 const app = express();
 const server = http.createServer(app);
+
+// 经 Nginx 反代部署时取真实客户端 IP（X-Forwarded-For 第一跳），限流/日志按真实 IP 生效
+app.set('trust proxy', 1);
 
 // 中间件
 // CORS 白名单：生产域名默认放行，本地开发放行 localhost/127.0.0.1 任意端口，其余拒绝。
@@ -43,6 +47,9 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// 认证接口限流：钝化登录/注册接口的暴力破解（无依赖内存限流，见 CLAUDE.md 第 8 节）
+app.use('/api/auth', createRateLimiter({ windowMs: 5 * 60 * 1000, max: 30 }));
+
 // 静态资源服务
 app.use('/media', express.static(path.join(__dirname, '../uploads')));
 
@@ -65,9 +72,31 @@ app.get('/api/version', (req, res) => {
   ok(res, { version: APP_VERSION });
 });
 
-// 错误处理
+// 错误处理：细分常见错误类型，避免一律 500 掩盖真实原因
 app.use((err, req, res, next) => {
-  console.error(err.stack);
+  console.error(err.stack || err);
+
+  // Mongoose 数据校验失败
+  if (err.name === 'ValidationError') {
+    return fail(res, 400, '请求参数不合法');
+  }
+  // ObjectId 格式错误等
+  if (err.name === 'CastError') {
+    return fail(res, 404, '资源不存在');
+  }
+  // 请求体 JSON 解析失败
+  if (err.type === 'entity.parse.failed' || (err instanceof SyntaxError && err.status === 400 && 'body' in err)) {
+    return fail(res, 400, '请求体格式错误');
+  }
+  // CORS 白名单拒绝
+  if (err.message && err.message.startsWith('Not allowed by CORS')) {
+    return fail(res, 403, '来源不被允许');
+  }
+  // multer 相关错误已在上传路由内处理，这里兜底
+  if (err && err.code === 'LIMIT_FILE_SIZE') {
+    return fail(res, 400, '文件大小超过限制');
+  }
+
   // 统一 { code, msg, data } 格式；开发环境把错误详情放入 data 便于调试
   res.status(500).json({
     code: 500,
