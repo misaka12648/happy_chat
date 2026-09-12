@@ -37,6 +37,22 @@ const conversationSchema = new mongoose.Schema({
     enum: ['TEXT', 'IMAGE', 'VIDEO', 'RICH', 'VOICE'],
     default: 'TEXT'
   },
+  // 群聊列表预览用：最后一条消息的发送者展示名（昵称/用户名）
+  lastMessageSenderName: {
+    type: String,
+    default: ''
+  },
+  // 清空聊天记录：按用户记录清空时间点，拉取消息时过滤该时间之前的历史（仅自己视角）
+  clearedAt: {
+    type: Map,
+    of: Date,
+    default: new Map()
+  },
+  // 群公告（仅群聊，群主可改，≤200 字，路由层校验）
+  announcement: {
+    type: String,
+    default: ''
+  },
   unreadCounts: {
     type: Map,
     of: Number,

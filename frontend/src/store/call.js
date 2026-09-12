@@ -58,6 +58,8 @@ export const useCallStore = defineStore('call', {
       stream.getTracks().forEach(t => this._pc.addTrack(t, stream));
 
       this._sendSignal('CALL_INVITE', { to: peerId, callId: this.callId, media });
+      this._startRing('outgoing');
+      this._requestWakeLock(); // 通话期间屏幕常亮
 
       // 45s 无应答自动取消
       this._ringTimer = setTimeout(() => {
@@ -73,6 +75,7 @@ export const useCallStore = defineStore('call', {
     async acceptCall() {
       if (this.status !== 'incoming') return;
       clearTimeout(this._ringTimer);
+      this._stopRing();
       const stream = await this._getLocalStream(this.media);
       if (!stream) {
         wsClient.send('CALL_REJECT', { to: this.peerId, callId: this.callId });
@@ -153,6 +156,8 @@ export const useCallStore = defineStore('call', {
           // 通讯录尚未拉取时（刚登录直接来电）补拉一次，头像/昵称到位后 UI 自行刷新
           const cs = useContactsStore();
           if (!cs.friends.length) cs.fetchContacts();
+          this._startRing('incoming');
+          this._requestWakeLock();
           // 被叫 60s 无处理自动视为未接听，避免 UI 永久挂起
           clearTimeout(this._incomingTimer);
           this._incomingTimer = setTimeout(() => {
@@ -167,6 +172,7 @@ export const useCallStore = defineStore('call', {
           // 应答方已就绪，发起方现在发出 offer
           if (this.status !== 'outgoing' || this.callId !== d.callId) return;
           clearTimeout(this._ringTimer);
+          this._stopRing();
           const offer = await this._pc.createOffer();
           await this._pc.setLocalDescription(offer);
           this._sendSignal('CALL_SDP', { to: this.peerId, callId: this.callId, sdp: offer });
@@ -279,9 +285,78 @@ export const useCallStore = defineStore('call', {
       return { nickname: '', username: '', avatar: '' };
     },
 
+    // ---------- 通话铃声（WebAudio 合成，无资源文件依赖） ----------
+    // 来电双音"叮咚"每 2s、去电回铃长音每 3s；接通/结束时 _stopRing
+    _startRing(kind) {
+      this._stopRing();
+      // #ifdef H5
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return;
+        this._ringCtx = this._ringCtx || new Ctx();
+        if (this._ringCtx.state === 'suspended') this._ringCtx.resume().catch(() => {});
+        const ctx = this._ringCtx;
+        const beep = (freq, dur, when, gainV = 0.08) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.value = freq;
+          gain.gain.setValueAtTime(0.0001, when);
+          gain.gain.exponentialRampToValueAtTime(gainV, when + 0.03);
+          gain.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+          osc.connect(gain).connect(ctx.destination);
+          osc.start(when);
+          osc.stop(when + dur + 0.05);
+        };
+        const loop = () => {
+          const t = ctx.currentTime + 0.05;
+          if (kind === 'incoming') {
+            beep(880, 0.35, t);
+            beep(660, 0.35, t + 0.45);
+          } else {
+            beep(440, 0.8, t, 0.05);
+          }
+        };
+        loop();
+        this._ringInterval = setInterval(loop, kind === 'incoming' ? 2000 : 3000);
+      } catch (e) { /* 音频设备缺失时静默 */ }
+      // #endif
+    },
+
+    _stopRing() {
+      if (this._ringInterval) {
+        clearInterval(this._ringInterval);
+        this._ringInterval = null;
+      }
+    },
+
+    // ---------- 屏幕常亮（H5 Wake Lock，不支持时静默） ----------
+    async _requestWakeLock() {
+      // #ifdef H5
+      try {
+        if (navigator.wakeLock) {
+          this._wakeLock = await navigator.wakeLock.request('screen');
+        }
+      } catch (e) { /* 不支持或被拒绝不影响通话 */ }
+      // #endif
+    },
+
+    _releaseWakeLock() {
+      // #ifdef H5
+      try {
+        if (this._wakeLock) {
+          this._wakeLock.release();
+          this._wakeLock = null;
+        }
+      } catch (e) { /* ignore */ }
+      // #endif
+    },
+
     _cleanup() {
       clearTimeout(this._ringTimer);
       clearTimeout(this._incomingTimer);
+      this._stopRing();
+      this._releaseWakeLock();
       if (this._pc) {
         try { this._pc.close(); } catch (e) { /* ignore */ }
         this._pc = null;

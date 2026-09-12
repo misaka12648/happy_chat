@@ -217,7 +217,7 @@ export const upload = (url, filePath, name = 'file', options = {}) => {
   return new Promise((resolve, reject) => {
     const token = uni.getStorageSync('token');
 
-    uni.uploadFile({
+    const task = uni.uploadFile({
       url: `${BASE_URL}${url}`,
       filePath,
       name,
@@ -254,6 +254,13 @@ export const upload = (url, filePath, name = 'file', options = {}) => {
         reject(new Error(isTimeout ? '上传超时，请稍后重试' : '网络连接失败'));
       }
     });
+
+    // 上传进度回调（0-100），供气泡内进度展示
+    if (options.onProgress && task && typeof task.onProgressUpdate === 'function') {
+      task.onProgressUpdate((res) => {
+        try { options.onProgress(res.progress); } catch (e) { /* 进度回调异常不影响上传 */ }
+      });
+    }
   });
 };
 

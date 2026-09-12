@@ -11,6 +11,7 @@ const onlineUsers = new Map();
 // 与 HTTP 通道一致的内容上限（见 CLAUDE.md 第 4.3 节）
 const MAX_CONTENT_LENGTH = 10000;
 const MAX_CONTENT_BLOCKS = 50;
+const MAX_BLOCK_TEXT_LENGTH = 5000;
 
 /**
  * 设置 WebSocket 服务器
@@ -300,7 +301,7 @@ function validateMessageContent({ content, contentBlocks }) {
     if (!Array.isArray(contentBlocks)) return '富文本内容块过多';
     if (contentBlocks.length > MAX_CONTENT_BLOCKS) return '富文本内容块过多';
     for (const block of contentBlocks) {
-      if (block && typeof block.content === 'string' && block.content.length > MAX_CONTENT_LENGTH) {
+      if (block && typeof block.content === 'string' && block.content.length > MAX_BLOCK_TEXT_LENGTH) {
         return '消息内容过长';
       }
     }
@@ -397,6 +398,8 @@ async function handleSendMessage(ws, data) {
   conversation.lastMessage = previewFor(messageType, content, contentBlocks);
   conversation.lastMessageTime = message.createdAt;
   conversation.lastMessageType = messageType;
+  // 群聊列表预览显示发送者名
+  conversation.lastMessageSenderName = (ws.user && (ws.user.nickname || ws.user.username)) || '';
 
   // 增加除发送者外所有成员的未读数
   conversation.participants.forEach(p => {
@@ -460,6 +463,13 @@ async function handleRecallMessage(ws, data) {
     ws.send(JSON.stringify({
       type: 'ERROR',
       data: { message: '你无权访问此会话' }
+    }));
+    return;
+  }
+  if (message.conversationId.toString() !== conversation._id.toString()) {
+    ws.send(JSON.stringify({
+      type: 'ERROR',
+      data: { message: '消息不属于此会话' }
     }));
     return;
   }
@@ -564,7 +574,17 @@ async function handleReadMessage(ws, data) {
 
   // 单条已读（仅接收者本人可标记；群聊消息无接收者概念，直接跳过）
   const message = await Message.findById(messageId);
-  if (message && message.receiver && message.receiver.toString() === ws.userId) {
+  if (!message) {
+    return;
+  }
+  if (message.conversationId.toString() !== conversation._id.toString()) {
+    ws.send(JSON.stringify({
+      type: 'ERROR',
+      data: { message: '消息不属于此会话' }
+    }));
+    return;
+  }
+  if (message.receiver && message.receiver.toString() === ws.userId) {
     message.read = true;
     await message.save();
   }

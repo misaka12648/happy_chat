@@ -43,7 +43,7 @@
             />
             <view class="request-meta">
               <text class="request-name">{{ req.requester.nickname || req.requester.username }}</text>
-              <text class="request-time">请求添加你为好友</text>
+              <text class="request-time">请求添加你为好友 · {{ relativeShort(req.createdAt) }}</text>
             </view>
           </view>
           <GradientButton
@@ -128,34 +128,55 @@
       />
       
       <view v-else class="friend-list">
+        <!-- 按拼音首字母分组，微信式字母吸顶标题 + 右侧索引条 -->
         <view
-          v-for="friend in friends"
-          :key="friend._id"
-          class="friend-item"
-          @click="openFriendCard(friend)"
-          @longpress="onFriendLongPress(friend)"
+          v-for="group in groupedFriends"
+          :key="group.letter"
+          :id="'friend-group-' + group.letter"
+          class="friend-group"
         >
-          <view class="friend-info">
-            <AppAvatar
-              :src="getMediaUrl(friend.avatar)"
-              :background="getAvatarGradient(friend)"
-              :text="getAvatarText(friend)"
-              size="88rpx"
-              radius="24rpx"
-              font-size="32rpx"
-              shadow="0 4rpx 12rpx rgba(0, 0, 0, 0.1)"
-            />
-            <view class="friend-meta">
-              <text class="friend-name">{{ friend.remark || friend.nickname || friend.username }}</text>
-              <view class="friend-status-wrap">
-                <view class="status-dot" :class="{ online: friend.online }"></view>
-                <text class="friend-status">{{ friend.online ? '在线' : '离线' }}</text>
+          <view class="group-letter-badge">
+            <text class="group-letter-text">{{ group.letter }}</text>
+          </view>
+          <view
+            v-for="friend in group.items"
+            :key="friend._id"
+            class="friend-item"
+            @click="openFriendCard(friend)"
+            @longpress="onFriendLongPress(friend)"
+          >
+            <view class="friend-info">
+              <AppAvatar
+                :src="getMediaUrl(friend.avatar)"
+                :background="getAvatarGradient(friend)"
+                :text="getAvatarText(friend)"
+                size="88rpx"
+                radius="24rpx"
+                font-size="32rpx"
+                shadow="0 4rpx 12rpx rgba(0, 0, 0, 0.1)"
+              />
+              <view class="friend-meta">
+                <text class="friend-name">{{ friend.remark || friend.nickname || friend.username }}</text>
+                <view class="friend-status-wrap">
+                  <view class="status-dot" :class="{ online: friend.online }"></view>
+                  <text class="friend-status">{{ lastSeenText(friend) }}</text>
+                </view>
               </view>
             </view>
+            <uni-icons type="forward" size="20" color="var(--color-icon-muted)" />
           </view>
-          <uni-icons type="forward" size="20" color="var(--color-icon-muted)" />
         </view>
       </view>
+    </view>
+
+    <!-- 右侧字母索引条（好友较多时展示，点击跳组） -->
+    <view v-if="groupedFriends.length > 1" class="letter-index">
+      <text
+        v-for="g in groupedFriends"
+        :key="'idx-' + g.letter"
+        class="letter-index-item"
+        @click="scrollToGroup(g.letter)"
+      >{{ g.letter }}</text>
     </view>
 
     <!-- 删除好友确认弹窗 -->
@@ -299,6 +320,76 @@ const searchResults = ref([]);
 // 好友与好友请求已迁入 Pinia（contactsStore），统一缓存 + TTL + 三态
 const friends = computed(() => contactsStore.friends);
 const pendingRequests = computed(() => contactsStore.pendingRequests);
+
+// ========== 好友拼音分组（微信通讯录式） ==========
+// 中文按拼音排序（Intl.Collator）；注意部分 ICU 实现把汉字整体排在拉丁字母之前，
+// 因此不能用汉字与"A/B/C"直接比较，改用"汉字锚点"：每个字母取一个代表汉字，
+// 汉字只与锚点汉字比较（拼音序可靠），从 Z 往回找第一个不大于它的锚点即其字母。
+const PINYIN_COLLATOR = new Intl.Collator('zh-Hans-CN-u-co-pinyin');
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').filter(l => !'IUV'.includes(l)); // 拼音音节无 I/U/V 开头
+
+const ANCHOR = { A: '啊', B: '巴', C: '擦', D: '搭', E: '鹅', F: '发', G: '嘎', H: '哈', J: '击', K: '喀', L: '拉', M: '妈', N: '拿', O: '哦', P: '趴', Q: '七', R: '然', S: '撒', T: '塌', W: '挖', X: '西', Y: '压', Z: '匝' };
+
+const displayNameOf = (f) => f.remark || f.nickname || f.username || '';
+
+const letterOf = (name) => {
+  const ch = (name || '').trim().charAt(0).toUpperCase();
+  if (/[A-Z]/.test(ch)) return ch;
+  if (!ch) return '#';
+  const reversed = [...LETTERS].reverse();
+  for (const letter of reversed) {
+    if (PINYIN_COLLATOR.compare(ch, ANCHOR[letter]) >= 0) return letter;
+  }
+  return '#';
+};
+
+const groupedFriends = computed(() => {
+  const map = new Map();
+  friends.value.forEach(f => {
+    const letter = letterOf(displayNameOf(f));
+    if (!map.has(letter)) map.set(letter, []);
+    map.get(letter).push(f);
+  });
+  return Array.from(map.entries())
+    .map(([letter, items]) => ({
+      letter,
+      items: items.sort((a, b) => PINYIN_COLLATOR.compare(displayNameOf(a), displayNameOf(b)))
+    }))
+    .sort((a, b) => {
+      const oa = a.letter === '#' ? 1000 : a.letter.charCodeAt(0);
+      const ob = b.letter === '#' ? 1000 : b.letter.charCodeAt(0);
+      return oa - ob;
+    });
+});
+
+// 点击索引条跳到对应分组（H5 原生平滑滚动）
+const scrollToGroup = (letter) => {
+  // #ifdef H5
+  const el = document.getElementById('friend-group-' + letter);
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // #endif
+};
+
+// 好友在线状态文案：离线时展示最后在线的相对时间
+const lastSeenText = (f) => {
+  if (f.online) return '在线';
+  if (!f.lastSeen) return '离线';
+  const diff = Date.now() - new Date(f.lastSeen).getTime();
+  if (diff < 60000) return '最后在线 刚刚';
+  if (diff < 3600000) return '最后在线 ' + Math.floor(diff / 60000) + '分钟前';
+  if (diff < 86400000) return '最后在线 ' + Math.floor(diff / 3600000) + '小时前';
+  return '最后在线 ' + Math.floor(diff / 86400000) + '天前';
+};
+
+// 相对时间短格式（好友请求等时间标注用）
+const relativeShort = (time) => {
+  if (!time) return '';
+  const diff = Date.now() - new Date(time).getTime();
+  if (diff < 60000) return '刚刚';
+  if (diff < 3600000) return Math.floor(diff / 60000) + '分钟前';
+  if (diff < 86400000) return Math.floor(diff / 3600000) + '小时前';
+  return Math.floor(diff / 86400000) + '天前';
+};
 
 // 删除好友确认弹窗状态
 const showDeleteModal = ref(false);
@@ -925,6 +1016,64 @@ const cardDeleteFriend = () => {
 .friend-list {
   display: flex;
   flex-direction: column;
+}
+
+/* 字母分组容器 */
+.friend-group {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 分组字母徽章：滚动时吸顶 */
+.group-letter-badge {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--color-quote-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 8rpx 20rpx;
+  border-radius: 10rpx;
+  margin-bottom: 4rpx;
+}
+
+.group-letter-text {
+  font-size: 24rpx;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+  letter-spacing: 2rpx;
+}
+
+/* 右侧字母索引条：垂直居中悬浮，点击跳组 */
+.letter-index {
+  position: fixed;
+  right: 6rpx;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4rpx;
+  padding: 10rpx 6rpx;
+  background: var(--color-nav);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 999rpx;
+  border: 1rpx solid var(--glass-border);
+  box-shadow: var(--shadow-sm);
+  z-index: 50;
+}
+
+.letter-index-item {
+  font-size: 20rpx;
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+  padding: 2rpx 8rpx;
+  line-height: 1.4;
+}
+
+.letter-index-item:active {
+  color: var(--color-primary);
 }
 
 .friend-item {

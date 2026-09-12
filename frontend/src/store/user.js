@@ -2,7 +2,8 @@ import { defineStore } from 'pinia';
 import { post, get, put } from '@/utils/request';
 import { encodePassword } from '@/utils/crypto';
 import wsClient from '@/utils/socket';
-import { registerNotificationHandler } from '@/utils/notify';
+import { registerNotificationHandler, resetTitleBadge } from '@/utils/notify';
+import { registerConnectStatus } from '@/utils/connect-status';
 import { useCallStore } from '@/store/call';
 import { useChatStore } from '@/store/chat';
 import { useContactsStore } from '@/store/contacts';
@@ -73,6 +74,8 @@ export const useUserStore = defineStore('user', {
           wsClient.connect();
           // 登录后注册全局桌面通知与通话信令处理器（启动时注册的已随 disconnect 清空）
           registerNotificationHandler();
+          registerConnectStatus();
+
           useCallStore().registerCallHandlers();
           return { success: true, data: res.data };
         }
@@ -95,6 +98,8 @@ export const useUserStore = defineStore('user', {
           // 注册成功后立即进入与登录一致的实时会话状态，避免首条消息因 WS 未连接而失败
           wsClient.connect();
           registerNotificationHandler();
+          registerConnectStatus();
+
           useCallStore().registerCallHandlers();
           return { success: true, data: res.data };
         }
@@ -182,9 +187,18 @@ export const useUserStore = defineStore('user', {
     logout() {
       wsClient.disconnect();
 
+      // 重置标题/favicon（登出前可能带未读角标）
+      resetTitleBadge();
+
       // disconnect 会清空所有 WS 处理器，业务 store 一并归零
       useChatStore().$reset();
       useContactsStore().$reset();
+
+      // 清理聊天草稿：草稿按会话存，换账号登录不能看到前任的草稿（隐私）
+      try {
+        const info = uni.getStorageInfoSync();
+        info.keys.filter(k => k.startsWith('draft_')).forEach(k => uni.removeStorageSync(k));
+      } catch (e) { /* ignore */ }
 
       this.token = '';
       this.refreshToken = '';

@@ -1,9 +1,9 @@
 // 生产环境使用当前域名（由 Nginx 反向代理 /ws），开发环境读取 .env 配置
 import { tryRefreshToken } from '@/utils/request';
 
-let BASE_URL = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8080/ws';
+let BASE_URL = import.meta.env.PROD ? '' : (import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8080/ws');
 // #ifdef H5
-if (process.env.NODE_ENV === 'production' && typeof location !== 'undefined') {
+if (import.meta.env.PROD && typeof location !== 'undefined') {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   BASE_URL = `${proto}//${location.host}/ws`;
 }
@@ -87,6 +87,13 @@ class WebSocketClient {
       console.log('WebSocket 已断开', res && res.code ? `(code: ${res.code})` : '');
       this.isConnected = false;
       this.stopHeartbeat();
+      // 通知页面层"连接已断开"（connect-status 状态条等本地订阅者；disconnect() 主动断开不触发）
+      const lostHandlers = this.messageHandlers.get('DISCONNECTED');
+      if (lostHandlers) {
+        lostHandlers.forEach(handler => {
+          try { handler({ code: res && res.code }); } catch (e) { console.error('DISCONNECTED 处理器错误:', e); }
+        });
+      }
       // 4001 = 服务端因 token 缺失/失效关闭：先静默续期，成功再重连（避免拿过期 token 反复失败）
       if (res && res.code === 4001) {
         tryRefreshToken().then((ok) => { if (ok) this.tryReconnect(); });

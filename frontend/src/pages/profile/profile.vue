@@ -63,8 +63,45 @@
             icon-color="#A78BFA"
             icon-bg="rgba(167, 139, 250, 0.1)"
             text="消息通知"
+            :show-arrow="false"
             @click="handleNotificationSetting"
-          />
+          >
+            <template #right>
+              <text class="menu-value">{{ notifyStatusText }}</text>
+              <ToggleSwitch :checked="notifyOn" :disabled="!notifySupported" @change="handleNotificationSetting" />
+            </template>
+          </MenuRow>
+
+          <!-- 已授权时提供测试入口，让用户确认通知真的能弹出来 -->
+          <view v-if="notifyPermission === 'granted'" class="menu-divider"></view>
+          <MenuRow
+            v-if="notifyPermission === 'granted'"
+            icon="notification-filled"
+            icon-color="#A78BFA"
+            icon-bg="rgba(167, 139, 250, 0.1)"
+            text="发送测试通知"
+            :show-arrow="false"
+            @click="sendTestNotification"
+          >
+            <template #right>
+              <text class="menu-value">立即试试</text>
+            </template>
+          </MenuRow>
+
+          <view class="menu-divider"></view>
+
+          <MenuRow
+            icon="sound-filled"
+            icon-color="#FBBF24"
+            icon-bg="rgba(251, 191, 36, 0.1)"
+            text="消息提示音"
+            :show-arrow="false"
+            @click="handleToggleSound"
+          >
+            <template #right>
+              <ToggleSwitch :checked="soundOn" @change="handleToggleSound" />
+            </template>
+          </MenuRow>
 
           <view class="menu-divider"></view>
 
@@ -83,8 +120,12 @@
             icon-color="#818CF8"
             icon-bg="rgba(129, 140, 248, 0.1)"
             text="深色模式"
-            @click="handleToggleTheme"
-          />
+            @click="showThemeModal = true"
+          >
+            <template #right>
+              <text class="menu-value">{{ themeModeLabel }}</text>
+            </template>
+          </MenuRow>
         </view>
       </view>
 
@@ -99,6 +140,21 @@
             text="给我们评分"
             @click="handleRate"
           />
+
+          <view class="menu-divider"></view>
+
+          <MenuRow
+            icon="trash"
+            icon-color="#F87171"
+            icon-bg="rgba(248, 113, 113, 0.1)"
+            text="清理聊天草稿"
+            :show-arrow="false"
+            @click="handleClearDrafts"
+          >
+            <template #right>
+              <text class="menu-value">{{ draftCountText }}</text>
+            </template>
+          </MenuRow>
 
           <view class="menu-divider"></view>
 
@@ -141,6 +197,7 @@
           placeholder-class="edit-input-placeholder"
           maxlength="20"
         />
+        <text class="edit-char-count">{{ editNickname.length }}/20</text>
       </view>
       <view class="edit-field edit-field-gap">
         <text class="edit-label">个性签名</text>
@@ -153,6 +210,7 @@
           confirm-type="done"
           @confirm="confirmEdit"
         />
+        <text class="edit-char-count" :class="{ 'edit-char-count-limit': editBio.length >= 50 }">{{ editBio.length }}/50</text>
       </view>
     </BaseModal>
 
@@ -262,6 +320,35 @@
       </view>
     </BaseModal>
 
+    <!-- 深色模式三选一弹窗：点选即时生效（弹窗后可见实时预览），"完成"关闭 -->
+    <BaseModal
+      v-model:visible="showThemeModal"
+      title="深色模式"
+      :show-cancel="false"
+      confirm-text="完成"
+      width="560rpx"
+      @confirm="showThemeModal = false"
+    >
+      <view class="theme-option-list">
+        <view
+          v-for="opt in THEME_OPTIONS"
+          :key="opt.value"
+          class="theme-option"
+          @click="handleThemeSelect(opt.value)"
+        >
+          <text class="theme-option-label">{{ opt.label }}</text>
+          <text class="theme-option-desc">{{ opt.desc }}</text>
+          <uni-icons
+            v-if="themeMode === opt.value"
+            class="theme-option-check"
+            type="checkmarkempty"
+            size="20"
+            color="var(--color-primary)"
+          />
+        </view>
+      </view>
+    </BaseModal>
+
     <!-- 关于弹窗 -->
     <BaseModal
       v-model:visible="showAboutModal"
@@ -290,16 +377,17 @@
 
 <script setup>
 import CallOverlay from '@/components/CallOverlay/CallOverlay.vue';
-import { ref, computed, onMounted, watch, nextTick } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { onShow } from '@dcloudio/uni-app';
 import { useUserStore } from '@/store/user';
 import { upload } from '@/utils/request';
-import { toggleNotifications } from '@/utils/notify';
-import { toggleTheme, getStoredTheme } from '@/utils/theme';
+import { toggleNotifications, isNotificationEnabled, isSoundEnabled, toggleSound } from '@/utils/notify';
+import { getThemeMode, setThemeMode } from '@/utils/theme';
 import { getMediaUrl, getAvatarText } from '@/utils/format';
 import BaseModal from '@/components/BaseModal/BaseModal.vue';
 import AppAvatar from '@/components/AppAvatar/AppAvatar.vue';
 import MenuRow from '@/components/MenuRow/MenuRow.vue';
+import ToggleSwitch from '@/components/ToggleSwitch/ToggleSwitch.vue';
 
 const userStore = useUserStore();
 const userInfo = ref({});
@@ -320,6 +408,49 @@ const confirmPassword = ref('');
 
 // 关于弹窗状态
 const showAboutModal = ref(false);
+
+// ========== 通知 / 提示音 / 深色模式 设置状态 ==========
+const notifyOn = ref(false);
+const soundOn = ref(true);
+const notifySupported = ref(true);
+const showThemeModal = ref(false);
+const themeMode = ref('system');
+
+const THEME_OPTIONS = [
+  { value: 'system', label: '跟随系统', desc: '随浏览器/系统的明暗设置自动切换' },
+  { value: 'light', label: '浅色模式', desc: '始终使用浅色主题' },
+  { value: 'dark', label: '深色模式', desc: '始终使用深色主题' }
+];
+
+const themeModeLabel = computed(() => {
+  const opt = THEME_OPTIONS.find(o => o.value === themeMode.value);
+  return opt ? opt.label : '跟随系统';
+});
+
+// 通知授权状态副标题（已授权/未授权/已拒绝）
+const notifyPermission = ref('default');
+const notifyStatusText = ref('');
+const refreshNotifyStatus = () => {
+  // #ifdef H5
+  if (!notifySupported.value) { notifyStatusText.value = '不支持'; return; }
+  notifyPermission.value = window.Notification.permission;
+  const p = notifyPermission.value;
+  notifyStatusText.value = p === 'granted' ? '已授权' : (p === 'denied' ? '已拒绝' : '未授权');
+  // #endif
+};
+
+// 发送测试通知：让用户立即确认桌面通知链路可用
+const sendTestNotification = () => {
+  // #ifdef H5
+  try {
+    if (notifyPermission.value !== 'granted') return;
+    new Notification('HappyChat', { body: '🎉 这是一条测试通知，桌面通知工作正常！' });
+    uni.showToast({ title: '测试通知已发送', icon: 'none' });
+  } catch (e) {
+    uni.showToast({ title: '测试通知发送失败', icon: 'none' });
+  }
+  // #endif
+};
 
 // 裁切相关状态
 const showCropModal = ref(false);
@@ -379,11 +510,33 @@ onMounted(async () => {
   if (result.success) {
     userInfo.value = result.data;
   }
+
+  // 初始化设置项的开关/状态显示（通知受浏览器支持限制，提示音默认开）
+  // #ifdef H5
+  notifySupported.value = typeof window !== 'undefined' && 'Notification' in window;
+  // #endif
+  notifyOn.value = isNotificationEnabled();
+  soundOn.value = isSoundEnabled();
+  themeMode.value = getThemeMode();
+  refreshDraftCount();
+  refreshNotifyStatus();
+
+  // 主题在别处（如列表页快捷键）被切换时，同步本页状态显示
+  uni.$on('theme-changed', onThemeChanged);
 });
+
+onUnmounted(() => {
+  uni.$off('theme-changed', onThemeChanged);
+});
+
+const onThemeChanged = (mode) => {
+  themeMode.value = mode;
+};
 
 // 切回本页时刷新用户信息（TTL 已在 store 去抖）
 onShow(async () => {
   if (!userStore.isLoggedIn) return;
+  refreshDraftCount();
   const result = await userStore.fetchUserInfo();
   if (result.success) {
     userInfo.value = result.data;
@@ -453,26 +606,64 @@ const confirmChangePassword = async () => {
   // 失败提示（如"旧密码错误"）已由请求层统一 toast
 };
 
-// ========== 消息通知 / 评分 ==========
+// ========== 消息通知 / 提示音 / 评分 ==========
 const handleNotificationSetting = async () => {
+  if (!notifySupported.value) {
+    uni.showToast({ title: '当前环境不支持消息通知', icon: 'none' });
+    return;
+  }
   const result = await toggleNotifications();
+  notifyOn.value = result.enabled;
+  refreshNotifyStatus();
   if (result.enabled) {
     uni.showToast({ title: '已开启桌面通知', icon: 'success' });
-  } else if (!result.enabled && !result.reason) {
+  } else if (!result.reason) {
     uni.showToast({ title: '已关闭桌面通知', icon: 'none' });
   } else {
     uni.showToast({ title: result.reason, icon: 'none' });
   }
 };
 
+const handleToggleSound = () => {
+  soundOn.value = toggleSound();
+  uni.showToast({ title: soundOn.value ? '已开启提示音' : '已关闭提示音', icon: 'none' });
+};
+
+const handleThemeSelect = (mode) => {
+  themeMode.value = setThemeMode(mode);
+};
+
 const handleRate = () => {
   uni.showToast({ title: '感谢支持，敬请期待', icon: 'none' });
 };
 
-// ========== 深色模式 ==========
-const handleToggleTheme = () => {
-  const next = toggleTheme();
-  uni.showToast({ title: next === 'dark' ? '已切换至深色模式' : '已切换至浅色模式', icon: 'none' });
+// ========== 清理聊天草稿 ==========
+// 统计各会话未发送草稿（draft_<convId>）的条数
+const draftCount = ref(0);
+const draftCountText = computed(() => (draftCount.value > 0 ? `${draftCount.value} 条` : '无草稿'));
+
+const refreshDraftCount = () => {
+  // #ifdef H5
+  try {
+    const info = uni.getStorageInfoSync();
+    draftCount.value = info.keys.filter(k => k.startsWith('draft_')).length;
+  } catch (e) {
+    draftCount.value = 0;
+  }
+  // #endif
+};
+
+const handleClearDrafts = () => {
+  if (draftCount.value === 0) {
+    uni.showToast({ title: '没有需要清理的草稿', icon: 'none' });
+    return;
+  }
+  // #ifdef H5
+  const info = uni.getStorageInfoSync();
+  info.keys.filter(k => k.startsWith('draft_')).forEach(k => uni.removeStorageSync(k));
+  // #endif
+  refreshDraftCount();
+  uni.showToast({ title: '草稿已清理', icon: 'success' });
 };
 
 const changeAvatar = () => {
@@ -894,6 +1085,53 @@ const confirmCrop = async () => {
   margin-left: 116rpx;
 }
 
+/* MenuRow 右侧当前状态文字（如深色模式"跟随系统"） */
+.menu-value {
+  font-size: 26rpx;
+  color: var(--color-text-tertiary);
+  margin-right: 8rpx;
+  flex-shrink: 0;
+}
+
+/* 深色模式三选一弹窗 */
+.theme-option-list {
+  display: flex;
+  flex-direction: column;
+  padding: 8rpx 0 16rpx;
+}
+
+.theme-option {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 24rpx 20rpx;
+  border-radius: 20rpx;
+  transition: background 0.2s ease;
+}
+
+.theme-option:active {
+  background: var(--color-quote-bg);
+}
+
+.theme-option-label {
+  font-size: 30rpx;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.theme-option-desc {
+  font-size: 24rpx;
+  color: var(--color-text-tertiary);
+  margin-top: 6rpx;
+}
+
+.theme-option-check {
+  position: absolute;
+  right: 24rpx;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
 /* 退出登录 */
 .logout-section {
   margin-top: 10rpx;
@@ -969,11 +1207,23 @@ const confirmCrop = async () => {
 
 .edit-input:focus {
   border-color: var(--color-primary);
-  background: #FFFFFF;
+  background: var(--color-card-solid);
 }
 
 .edit-input-placeholder {
   color: var(--color-text-tertiary);
+}
+
+/* 编辑弹窗字数统计 */
+.edit-char-count {
+  font-size: 20rpx;
+  color: var(--color-text-tertiary);
+  align-self: flex-end;
+  margin-top: 8rpx;
+}
+
+.edit-char-count-limit {
+  color: var(--color-error);
 }
 
 /* 裁切弹窗样式 */

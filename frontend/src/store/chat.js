@@ -74,6 +74,8 @@ export const useChatStore = defineStore('chat', {
         const res = await post('/api/conversations', { userId });
         if (res.code === 200) {
           this.currentConversation = res.data;
+          // 新会话需要出现在列表：失效列表缓存，返回列表页时强制重新拉取
+          this.lastFetched = 0;
           return res.data;
         }
         return null;
@@ -107,12 +109,23 @@ export const useChatStore = defineStore('chat', {
     },
 
     /**
-     * 写回某会话的消息缓存；仅缓存已确认的服务器消息，过滤本地临时消息（temp-*）
+     * 写回某会话的消息缓存（含分页游标）；仅缓存已确认的服务器消息，过滤本地临时消息。
+     * 缓存上限 20 个会话（近似 LRU：超出时淘汰最早的会话，当前会话不淘汰）
      */
     cacheMessages(conversationId, { messages = [], page = 1, hasMore = true } = {}) {
       if (!conversationId) return;
       const confirmed = messages.filter(m => m._id && !String(m._id).startsWith('temp-'));
       this.messageCache[conversationId] = { messages: confirmed, page, hasMore };
+      const keys = Object.keys(this.messageCache);
+      const MAX_CACHE_CONVERSATIONS = 20;
+      if (keys.length > MAX_CACHE_CONVERSATIONS) {
+        for (const key of keys) {
+          if (keys.length <= MAX_CACHE_CONVERSATIONS) break;
+          if (key === conversationId) continue; // 刚写入的不淘汰
+          this.messageCache[key] = undefined;
+          delete this.messageCache[key];
+        }
+      }
     },
 
     /**
@@ -141,6 +154,9 @@ export const useChatStore = defineStore('chat', {
         this.conversations[index].lastMessage = lastMessage;
         this.conversations[index].lastMessageTime = message.createdAt;
         this.conversations[index].lastMessageType = message.type;
+        // 群聊预览发送者名（与列表接口字段对齐）
+        this.conversations[index].lastMessageSenderName =
+          (message.sender && (message.sender.nickname || message.sender.username)) || '';
         
         // 仅当消息由对方发来（非自己发送）且不在当前会话时，才增加未读数
         // 红点 = 对方发送且自己未读的消息数，自己发的消息不计未读
@@ -205,6 +221,42 @@ export const useChatStore = defineStore('chat', {
       this.conversations = this.conversations.filter(c => c._id !== conversationId);
       if (this.currentConversation && this.currentConversation._id === conversationId) {
         this.currentConversation = null;
+      }
+    },
+
+    /**
+     * 仅本地移除会话（群解散等 WS 事件用）：不发请求，消息已由服务端删除
+     */
+    removeConversationLocal(conversationId) {
+      this.conversations = this.conversations.filter(c => c._id !== conversationId);
+      this.messageCache[conversationId] = undefined;
+      delete this.messageCache[conversationId];
+      if (this.currentConversation && this.currentConversation._id === conversationId) {
+        this.currentConversation = null;
+      }
+    },
+
+    /**
+     * 仅本地移除消息（消息删除用）：同步消息缓存快照，避免重进会话出现"幽灵消息"
+     */
+    removeMessageLocal(conversationId, ids) {
+      const cache = this.messageCache[conversationId];
+      if (cache) {
+        cache.messages = cache.messages.filter(m => !ids.includes(m._id));
+      }
+    },
+
+    /**
+     * 清空聊天记录（仅自己视角）：服务端记录 clearedAt 时间点，
+     * 本地清掉消息缓存与列表预览；重新进入会话时只拉取清空之后的消息
+     */
+    async clearConversationHistory(conversationId) {
+      await del(`/api/messages/conversation/${conversationId}`, null, { silent: true });
+      delete this.messageCache[conversationId];
+      const index = this.conversations.findIndex(c => c._id === conversationId);
+      if (index > -1) {
+        this.conversations[index].lastMessage = '';
+        this.conversations[index].unreadCount = 0;
       }
     },
 

@@ -19,6 +19,9 @@ router.post('/request', async (req, res) => {
     if (!recipientId) {
       return fail(res, 400, '接收者 ID 为必填项');
     }
+    if (!mongoose.Types.ObjectId.isValid(recipientId)) {
+      return fail(res, 400, '接收者 ID 无效');
+    }
 
     if (requesterId.toString() === recipientId) {
       return fail(res, 400, '不能添加自己为好友');
@@ -75,6 +78,10 @@ router.post('/accept', async (req, res) => {
   try {
     const { friendshipId } = req.body;
     const userId = req.user._id;
+
+    if (!friendshipId || !mongoose.Types.ObjectId.isValid(friendshipId)) {
+      return fail(res, 400, '好友请求 ID 无效');
+    }
 
     const friendship = await Friendship.findById(friendshipId);
     
@@ -223,6 +230,7 @@ router.delete('/:friendId', async (req, res) => {
 
     // 将自己加入会话软隐藏列表：好友删除后会话从自己的列表消失（消息保留，重新添加好友后可从通讯录再进）
     const conversation = await Conversation.findOne({
+      type: 'P2P',
       participants: { $all: [req.user._id, friendId] }
     });
     if (conversation) {

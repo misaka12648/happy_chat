@@ -6,10 +6,11 @@ import { MEDIA_BASE_URL } from '@/utils/request';
 
 /**
  * 拼接媒体资源完整地址：绝对地址原样返回，相对地址补上 MEDIA_BASE_URL。
+ * blob:/data: 等本地预览地址直通（上传进度中的本地图片预览）。
  */
 export const getMediaUrl = (url) => {
   if (!url) return '';
-  if (url.startsWith('http')) return url;
+  if (/^(https?:|blob:|data:)/.test(url)) return url;
   return MEDIA_BASE_URL + url;
 };
 
@@ -43,7 +44,7 @@ export const getAvatarText = (user) => {
 };
 
 /**
- * 会话列表时间：刚刚 / x分钟前 / 今日 HH:mm / M/D。
+ * 会话列表时间：刚刚 / x分钟前 / 今日 HH:mm / 昨天 HH:mm / 星期X / M/D。
  */
 export const formatListTime = (time) => {
   if (!time) return '';
@@ -52,9 +53,14 @@ export const formatListTime = (time) => {
   const diff = now - date;
   if (diff < 60000) return '刚刚';
   if (diff < 3600000) return Math.floor(diff / 60000) + '分钟前';
-  if (date.toDateString() === now.toDateString()) {
-    return date.getHours().toString().padStart(2, '0') + ':' + date.getMinutes().toString().padStart(2, '0');
-  }
+  const hhmm = date.getHours().toString().padStart(2, '0') + ':' + date.getMinutes().toString().padStart(2, '0');
+  if (date.toDateString() === now.toDateString()) return hhmm;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return '昨天 ' + hhmm;
+  const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((dayStart(now) - dayStart(date)) / 86400000);
+  if (days < 7) return '星期' + '日一二三四五六'[date.getDay()];
   return (date.getMonth() + 1) + '/' + date.getDate();
 };
 

@@ -77,14 +77,20 @@ frontend/src/
 | POST | /api/conversations/group | 创建群聊（成员须为创建者好友，上限 50 人） |
 | GET | /api/conversations/:id | 单会话详情（私聊对方信息 / 群聊成员列表） |
 | PUT | /api/conversations/:id/name · /:id/members | 群改名 / 邀请成员（仅群主，被邀者为群主好友） |
+| PUT | /api/conversations/:id/announcement | 设置群公告（仅群主，≤200 字，空串清除） |
 | POST | /api/conversations/:id/quit | 退出群聊（群主不可退） |
 | DELETE | /api/conversations/:id/group | 解散群聊（仅群主，删除会话与群消息） |
 | PUT | /api/conversations/:id/read | 标记已读 |
 | PUT | /api/conversations/:id/pin · /:id/mute | 置顶 / 免打扰开关（仅当前用户视角，布尔体 { pinned } / { muted }） |
 | DELETE | /api/conversations/:id | 软隐藏（仅自己列表消失，消息保留） |
 | GET | /api/messages/:conversationId | 历史消息分页（page/limit，按时间正序返回） |
+| GET | /api/messages/search/global | 跨会话消息搜索（我参与的会话，keyword 模糊匹配，倒序，limit≤50） |
+| GET | /api/messages/:conversationId/search | 会话内消息搜索（keyword 模糊匹配 TEXT/RICH 文本，倒序，limit≤50） |
 | POST | /api/messages | HTTP 发消息（备用通道，支持 clientId 幂等） |
 | PUT | /api/messages/:id/read · /recall | 已读 / 撤回（5 分钟内，HTTP 备用通道） |
+| DELETE | /api/messages/conversation/:conversationId | 清空聊天记录（仅自己视角：记录 clearedAt 时间点，拉取时过滤此前消息） |
+| DELETE | /api/messages/:id | 删除消息（仅自己视角：加入 hiddenFor，对方不受影响） |
+| PUT | /api/messages/:id/reactions | 切换表情回应（参与者均可用，结果实时广播 MESSAGE_REACTION） |
 | POST | /api/upload | 上传图片/视频（multipart，字段名 `file`，≤10MB） |
 | GET | /api/health · /api/version | 健康检查 / 前端热更新版本号 |
 
@@ -128,6 +134,10 @@ frontend/src/
 | ONLINE_STATUS | S→C | 好友上下线广播 |
 | FRIEND_REQUEST / FRIEND_ACCEPTED / FRIEND_REMOVED | S→C | 好友关系事件 |
 | GROUP_ADDED | S→C | 被邀请入群（客户端强刷会话列表） |
+| GROUP_MEMBER_LEFT | S→C | 有成员退群（客户端刷新成员与列表并提示） |
+| GROUP_DISBANDED | S→C | 群被解散（客户端本地移除会话，若正在浏览则退出详情页） |
+| GROUP_ANNOUNCEMENT | S→C | 群公告更新（浏览中的公告条即时更新，未浏览弹提示） |
+| MESSAGE_REACTION | S→C | 消息表情回应变更（按消息 ID 更新本地 reactions） |
 | ERROR | S→C | 服务端错误 |
 
 新增消息类型时：服务端 `handleMessage` 分发 + 本表登记 + 前端 `wsClient.on(type)` 注册，三处缺一不可。
@@ -135,7 +145,7 @@ frontend/src/
 ## 6. 数据模型要点
 
 - **User**：密码 bcrypt(10)；`toJSON` 恒删 password；`online`/`lastSeen` 由 WS 连接维护；`bio` 个性签名（≤50 字）。
-- **Conversation**：`type` ∈ P2P/GROUP；群聊含 `name`（≤30 字）与 `owner`（群主，独享改名/加人/解散权）；私聊 P2P 查询**必须**带 `type: 'P2P'` 过滤（否则 `$all` 会误命中含双方成员的群）；`unreadCounts` 为 `Map<userId, count>`；`hiddenFor` 软删除、`pinnedFor` 置顶、`mutedFor` 免打扰均为当前用户视角。
+- **Conversation**：`type` ∈ P2P/GROUP；群聊含 `name`（≤30 字）与 `owner`（群主，独享改名/加人/解散权）；私聊 P2P 查询**必须**带 `type: 'P2P'` 过滤（否则 `$all` 会误命中含双方成员的群）；`unreadCounts` 为 `Map<userId, count>`；`hiddenFor` 软删除、`pinnedFor` 置顶、`mutedFor` 免打扰均为当前用户视角；`lastMessageSenderName` 存群聊最后一条消息发送者展示名（列表预览"名字: 内容"用）。
 - **Message**：`type` ∈ TEXT/IMAGE/VIDEO/RICH/VOICE；群聊消息 `receiver` 为 null（私聊必填）；VOICE 附 `duration`（秒）；`contentBlocks` 承载富文本；`replyInfo` 存被回复消息**快照**；`(sender, clientId)` 部分唯一索引做幂等。**新增消息类型时必须同步扩展 `Conversation.lastMessageType` 的枚举，否则会话保存将抛 ValidationError**（历史教训）。
 - **Friendship**：`(requester, recipient)` 唯一索引，状态机 PENDING → ACCEPTED/REJECTED；`remarks` 为 `Map<设置者userId, 备注文本>`（备注仅设置者可见，≤20 字）。
 - **Friendship**：`(requester, recipient)` 唯一索引，状态机 PENDING → ACCEPTED/REJECTED。
@@ -163,7 +173,7 @@ frontend/src/
 - **动效**：入场 `fadeIn/slideUp`，按压反馈统一 `:active { transform: scale(0.94~0.98) }`，时长 0.15-0.3s。
 - **图标**：统一 `uni-icons` 线性风格；头像无图时用 `format.js` 的 6 色渐变板按首字符取色。
 - 新页面/新组件**必须**先参考现有页面（尤其 chat/list、profile）再动手；禁止引入设计令牌之外的颜色与阴影。扩展令牌需先改 `App.vue :root` 并全文检索复用。
-- 头像类展示统一走 `AppAvatar`；弹窗统一走 `BaseModal`；空/错/载入态统一走 `StateView`；按钮统一走 `GradientButton`。不要重复造这些轮子。
+- 头像类展示统一走 `AppAvatar`；弹窗统一走 `BaseModal`；空/错/载入态统一走 `StateView`；按钮统一走 `GradientButton`；开关统一走 `ToggleSwitch`。不要重复造这些轮子。
 
 ### 7.4 平台差异处理
 
@@ -178,6 +188,16 @@ frontend/src/
 - [ ] 上传文件扩展名由服务端 mimetype 白名单映射生成，不信任原始文件名。
 - [ ] 错误响应不泄露堆栈（生产环境 `data: null`）。
 - [ ] 未引入新的第三方依赖时优先复用现有依赖；确需引入须说明理由。
+
+### 8.1 已知传递依赖漏洞（评估后暂不升级，2026-09 评估）
+
+- **sharp（后端）**：libheif 相关 GHSA-g89c-p67h-r497 / GHSA-2jg2-4ch7-h545（3 high + 3 moderate）。
+  修复需升级 sharp@0.35（破坏性变更）。**风险不可达**：上传接口 mimetype 白名单仅放行
+  jpeg/png/webp（见 routes/upload.js），sharp 实际只处理这三类输入，攻击者无法投递 HEIF 文件。
+  升级时机：需要 HEIF/AVIF 支持或 sharp 官方 backport 时一并处理，升级后必须回归图片缩略图链路。
+- **前端 uni-app 工具链**：约 60 项告警集中在 @dcloudio/* 的传递依赖（jimp / ws / uni-mp-vite 等），
+  属于构建期与小程序端模块，H5 运行时不包含。框架自身锁版本，升级等价于 uni-app 大版本迁移。
+  处理策略：跟随 uni-app 官方版本升级时自然解决，不单独处理。
 
 ## 9. 部署纪律（硬性约束）
 

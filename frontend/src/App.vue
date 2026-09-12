@@ -3,6 +3,7 @@ import { useUserStore } from '@/store/user';
 import wsClient from '@/utils/socket';
 import { BASE_URL } from '@/utils/request';
 import { registerNotificationHandler } from '@/utils/notify';
+import { registerConnectStatus } from '@/utils/connect-status';
 import { initTheme } from '@/utils/theme';
 import { useCallStore } from '@/store/call';
 import BaseModal from '@/components/BaseModal/BaseModal.vue';
@@ -40,6 +41,8 @@ export default {
       userStore.fetchUserInfo();
       // 全局桌面通知（wsClient.disconnect 会清空处理器，登录后由 store 再注册，二者不会叠加）
       registerNotificationHandler();
+      // 连接状态条：断线可见、重连有反馈（注册时序同上）
+      registerConnectStatus();
       // 通话信令处理器（与通知同样的注册时序约定）
       useCallStore().registerCallHandlers();
     }
@@ -147,6 +150,8 @@ export default {
   /* 图标语义色：导航强图标 / 弱化图标 */
   --color-nav-icon: #1A1A2E;
   --color-icon-muted: #9CA3AF;
+  /* 开关关闭态轨道底色（ToggleSwitch） */
+  --color-toggle-off: rgba(0, 0, 0, 0.14);
 
   /* 玻璃拟态层级令牌：全站半透明白底统一由这些变量控制，深色模式整体换深色底 */
   --color-nav: rgba(255, 255, 255, 0.95);          /* 顶栏/输入栏/搜索栏 */
@@ -215,6 +220,7 @@ html.dark {
   --color-input-bg: rgba(255, 255, 255, 0.08);
   --color-nav-icon: #F2F2F7;
   --color-icon-muted: #8A8A9C;
+  --color-toggle-off: rgba(255, 255, 255, 0.18);
 
   /* 阴影在深色底上收敛 */
   --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.3);

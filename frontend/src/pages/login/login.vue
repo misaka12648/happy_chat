@@ -67,7 +67,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useUserStore } from '@/store/user';
 import FormInput from '@/components/FormInput/FormInput.vue';
 import GradientButton from '@/components/GradientButton/GradientButton.vue';
@@ -76,6 +76,12 @@ const userStore = useUserStore();
 const username = ref('');
 const password = ref('');
 const loading = ref(false);
+
+// 记住上次登录的用户名（仅记住用户名，不含密码）
+const REMEMBER_KEY = 'lastLoginUsername';
+onMounted(() => {
+  username.value = uni.getStorageSync(REMEMBER_KEY) || '';
+});
 
 const handleLogin = async () => {
   if (!username.value || !password.value) {
@@ -86,12 +92,13 @@ const handleLogin = async () => {
   const result = await userStore.login(username.value, password.value);
   loading.value = false;
   if (result.success) {
+    uni.setStorageSync(REMEMBER_KEY, username.value.trim());
     uni.showToast({ title: '登录成功', icon: 'success' });
     setTimeout(() => {
       uni.switchTab({ url: '/pages/chat/list' });
     }, 500);
   }
-  // 登录失败提示（如“用户名或密码错误”）已由请求层统一处理
+  // 登录失败提示（如”用户名或密码错误”）已由请求层统一处理
 };
 
 const goRegister = () => {

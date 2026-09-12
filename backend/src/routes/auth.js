@@ -9,6 +9,26 @@ const { ok, fail } = require('../utils/response');
  * POST /api/auth/register
  * 用户注册
  */
+/**
+ * GET /api/auth/check-username?username=
+ * 注册用户名可用性检查（无需登录；仅返回是否可用与原因，不泄露其他用户信息）
+ */
+router.get('/check-username', async (req, res) => {
+  try {
+    const username = typeof req.query.username === 'string' ? req.query.username.trim() : '';
+    if (!username) return fail(res, 400, '用户名不能为空');
+    if (username.length < 3 || username.length > 20) {
+      return ok(res, { available: false, reason: '用户名应为 3-20 个字符' });
+    }
+    const existing = await User.findOne({ username }).select('_id');
+    if (existing) return ok(res, { available: false, reason: '该用户名已被注册' });
+    ok(res, { available: true });
+  } catch (error) {
+    console.error('用户名检查错误:', error);
+    fail(res, 500, '服务器内部错误');
+  }
+});
+
 router.post('/register', async (req, res) => {
   try {
     const { username, nickname } = req.body;

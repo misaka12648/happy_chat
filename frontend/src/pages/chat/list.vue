@@ -1,7 +1,37 @@
 <template>
   <view class="chat-list">
+    <!-- 顶部标题栏：主题快捷切换（免进设置一步切换明暗） -->
+    <view class="list-header">
+      <text class="list-title">消息</text>
+      <view class="theme-toggle" aria-label="切换深色模式" @click="onToggleTheme">
+        <text class="theme-toggle-icon">{{ isDarkTheme ? '☀️' : '🌙' }}</text>
+      </view>
+    </view>
+
     <!-- 搜索栏 -->
     <SearchBar v-model="searchKeyword" placeholder="搜索聊天记录" />
+
+    <!-- 全局消息搜索结果（有搜索词时置于最上方，不受会话过滤空态影响） -->
+    <view v-if="searchKeyword && msgResults.length" class="conversation-list msg-search-section">
+      <view class="msg-search-header">
+        <text class="msg-search-title">相关消息</text>
+      </view>
+      <view
+        v-for="r in msgResults"
+        :key="r._id"
+        class="msg-search-item"
+        @click="openSearchResult(r)"
+      >
+        <text class="msg-search-conv">{{ searchConvLabel(r) }}</text>
+        <view class="msg-search-content">
+          <template v-for="(seg, si) in highlightGlobal(r.content)" :key="si">
+            <text v-if="seg.hit" class="msg-search-hit">{{ seg.text }}</text>
+            <text v-else>{{ seg.text }}</text>
+          </template>
+        </view>
+        <text class="msg-search-time">{{ formatListTime(r.createdAt) }}</text>
+      </view>
+    </view>
 
     <!-- 加载状态 -->
     <StateView v-if="viewState === 'loading'" state="loading" />
@@ -17,27 +47,32 @@
       @retry="retryConversations"
     />
 
-    <!-- 空状态 -->
+    <!-- 空态：搜索无结果与真空态文案区分 -->
     <StateView
       v-else-if="filteredConversations.length === 0"
       state="empty"
-      icon="💬"
-      title="暂无聊天记录"
-      subtitle="去通讯录找朋友聊天吧"
+      :icon="searchKeyword ? '🔍' : '💬'"
+      :title="searchKeyword ? '未找到相关会话' : '暂无聊天记录'"
+      :subtitle="searchKeyword ? '换个关键词，或看看上方相关消息' : '去通讯录找朋友聊天吧'"
     />
 
     <!-- 会话列表 -->
     <view v-else class="conversation-list">
       <uni-swipe-action>
         <view
-          v-for="(conv, index) in filteredConversations"
+          v-for="(conv, index) in shownConversations"
           :key="conv._id"
           class="conv-shadow"
           :class="{ 'conv-pinned': conv.pinned }"
           :style="{ animationDelay: index * 0.05 + 's' }"
         >
           <uni-swipe-action-item class="conv-swipe-item">
-            <view class="conversation-item" @click="openChat(conv)">
+            <view
+              class="conversation-item"
+              @click="openChat(conv)"
+              @contextmenu.prevent="openConvMenu($event, conv)"
+              @longpress="openConvMenu($event, conv)"
+            >
               <!-- 群聊：群名首字渐变头像；私聊：对方头像 + 在线绿点 -->
               <view class="conv-avatar-wrap">
                 <AppAvatar
@@ -58,12 +93,18 @@
               <view class="conversation-content">
                 <view class="conversation-header">
                   <text class="nickname">{{ displayName(conv) }}</text>
+                  <uni-icons v-if="conv.pinned" class="pin-flag" type="flag-filled" size="13" color="var(--color-secondary)" />
                   <text class="time">{{ formatListTime(conv.lastMessageTime) }}</text>
                 </view>
                 <view class="conversation-footer">
-                  <text class="last-message">{{ getLastMessagePreview(conv) }}</text>
-                  <!-- 免打扰：未读红点退化为灰色圆点 -->
-                  <view v-if="conv.unreadCount > 0 && !conv.muted" class="unread-badge">
+                  <!-- 有未发送草稿时红字提示（微信式），优先于最后一条消息预览 -->
+                  <text v-if="draftPreview(conv)" class="last-message last-message-draft">[草稿] {{ draftPreview(conv) }}</text>
+                  <!-- 群聊 @ 我：红字 [@我] 前缀 -->
+                  <text v-else-if="mentionedMeLast(conv)" class="last-message last-message-draft">[@我] {{ getLastMessagePreview(conv) }}</text>
+                  <!-- 有未读时最后一条预览加粗，扫一眼即可定位未读会话 -->
+                  <text v-else class="last-message" :class="{ 'last-message-unread': conv.unreadCount > 0 }">{{ getLastMessagePreview(conv) }}</text>
+                  <!-- 未读徽标：@我的免打扰会话也保持红标（灰色圆点仅用于普通免打扰） -->
+                  <view v-if="conv.unreadCount > 0 && (!conv.muted || mentionedMeLast(conv))" class="unread-badge">
                     <text class="unread-text">{{ conv.unreadCount > 99 ? '99+' : conv.unreadCount }}</text>
                   </view>
                   <view v-else-if="conv.unreadCount > 0 && conv.muted" class="unread-dot-muted"></view>
@@ -89,26 +130,70 @@
     </view>
   </view>
 
+  <!-- 会话右键/长按快捷菜单（桌面右键与移动长按等效于左滑操作） -->
+  <view v-if="convMenu.visible" class="conv-menu-mask" @click="closeConvMenu" @contextmenu.prevent="closeConvMenu">
+    <view class="conv-menu" :style="{ left: convMenu.x + 'px', top: convMenu.y + 'px' }" @click.stop>
+      <view class="conv-menu-item" @click="menuTogglePin">
+        <text class="conv-menu-item-text">{{ convMenu.conv && convMenu.conv.pinned ? '取消置顶' : '置顶' }}</text>
+      </view>
+      <view v-if="convMenu.conv && convMenu.conv.unreadCount > 0" class="conv-menu-item" @click="menuMarkRead">
+        <text class="conv-menu-item-text">标记已读</text>
+      </view>
+      <view class="conv-menu-item" @click="menuToggleMute">
+        <text class="conv-menu-item-text">{{ convMenu.conv && convMenu.conv.muted ? '取消免打扰' : '免打扰' }}</text>
+      </view>
+      <view class="conv-menu-item" @click="menuDelete">
+        <text class="conv-menu-item-text conv-menu-item-text-danger">删除</text>
+      </view>
+      <view class="conv-menu-item" @click="menuClearHistory">
+        <text class="conv-menu-item-text">清空记录</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 清空聊天记录确认弹窗 -->
+  <BaseModal
+    v-model:visible="showClearModal"
+    title="清空聊天记录"
+    :content="`将清除你视角下与「${clearTargetName}」的聊天记录，对方不受影响。确定清空吗？`"
+    confirm-text="清空"
+    @confirm="confirmClearHistory"
+  />
+
   <!-- 全局通话覆盖层（状态由 call store 驱动，同一时刻仅一个实例可见） -->
   <CallOverlay />
 </template>
 
 <script setup>
 import CallOverlay from '@/components/CallOverlay/CallOverlay.vue';
-import { ref, computed, onMounted, watch } from 'vue';
-import { onShow } from '@dcloudio/uni-app';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { onShow, onPullDownRefresh } from '@dcloudio/uni-app';
 import { useChatStore } from '@/store/chat';
 import { useUserStore } from '@/store/user';
 import wsClient from '@/utils/socket';
+import { toggleTheme, resolveTheme, getThemeMode } from '@/utils/theme';
+import { navigateToConversation } from '@/utils/notify';
+import { get } from '@/utils/request';
 import { getMediaUrl, getAvatarGradient, getAvatarText, formatListTime } from '@/utils/format';
 import AppAvatar from '@/components/AppAvatar/AppAvatar.vue';
 import SearchBar from '@/components/SearchBar/SearchBar.vue';
 import StateView from '@/components/StateView/StateView.vue';
+import BaseModal from '@/components/BaseModal/BaseModal.vue';
 
 const chatStore = useChatStore();
 const userStore = useUserStore();
 const conversations = ref([]);
 const searchKeyword = ref('');
+
+// 主题快捷切换：按钮图标随当前生效主题变化（明→🌙，暗→☀️）
+const isDarkTheme = ref(resolveTheme(getThemeMode()) === 'dark');
+const onThemeChanged = (mode) => {
+  isDarkTheme.value = resolveTheme(mode) === 'dark';
+};
+const onToggleTheme = () => {
+  const next = toggleTheme();
+  uni.showToast({ title: next === 'dark' ? '已切换至深色模式' : '已切换至浅色模式', icon: 'none' });
+};
 
 // TabBar 未读徽标：免打扰会话不计入；99+ 封顶；无未读时移除徽标。
 // H5 下同步更新浏览器标签页标题。
@@ -125,8 +210,12 @@ const updateTabBarBadge = () => {
   document.title = total > 0 ? `(${total}) HappyChat` : 'HappyChat';
   // #endif
 };
-// store 中的会话会被原地修改（未读数增减/列表重排），deep watch 覆盖全部路径
-watch(() => chatStore.getConversations, updateTabBarBadge, { deep: true });
+// store 中的会话会被原地修改（未读数增减/列表重排），deep watch 覆盖全部路径；
+// WS 事件（群解散/成员退群）会整体替换 store 数组，此处同步列表本地引用
+watch(() => chatStore.getConversations, () => {
+  conversations.value = chatStore.getConversations;
+  updateTabBarBadge();
+}, { deep: true });
 
 // 三态视图：有数据(含陈旧)永远展示（SWR）；无数据时按 loading → error 优先判定；
 // lastFetched===0（从未拉取）视为 loading，消除首屏到 onMounted 之间的空态闪现。
@@ -146,6 +235,29 @@ const filteredConversations = computed(() => {
     return name.includes(keyword) || message.includes(keyword);
   });
 });
+
+// 草稿预览的重估信号：从详情页返回（onShow）时自增，驱动列表重新读取本地草稿
+const draftTick = ref(0);
+
+// 列表渲染入口：依赖 draftTick，保证离开会话后 [草稿] 标识立即出现/消失
+const shownConversations = computed(() => {
+  draftTick.value; // eslint-disable-line no-unused-expressions
+  return filteredConversations.value;
+});
+
+// 会话草稿摘要（详情页存于本地存储 draft_<convId>）；无草稿返回 ''
+const draftPreview = (conv) => {
+  // #ifdef H5
+  draftTick.value; // 建立响应依赖：tick 变化时重新读取
+  const draft = uni.getStorageSync('draft_' + conv._id);
+  if (!draft) return '';
+  const tmp = document.createElement('div');
+  tmp.innerHTML = draft;
+  const text = (tmp.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 30);
+  return text;
+  // #endif
+  return '';
+};
 
 // 会话显示名：群聊用群名，私聊备注优先
 const displayName = (conv) => {
@@ -174,6 +286,9 @@ onMounted(async () => {
   }
   await loadConversations();
 
+  // 主题可能在设置页被更改：同步快捷按钮图标
+  uni.$on('theme-changed', onThemeChanged);
+
   // 监听会话更新（新消息到达）
   wsClient.on('NEW_MESSAGE', (msg) => {
     // 若会话不在本地列表（已被删除/隐藏后对方又发来消息），强制拉取使其重新出现
@@ -197,18 +312,28 @@ onMounted(async () => {
     loadConversations({ force: true });
   });
 
-  // 被拉入新群聊：强刷会话列表使其出现
+  // 被拉入新群聊：强刷会话列表使其出现（全局横幅提醒由 notify.js 统一处理）
   wsClient.on('GROUP_ADDED', () => {
-    uni.showToast({ title: '你被邀请加入了新的群聊', icon: 'none' });
     loadConversations({ force: true });
   });
 });
 
-// 每次页面显示时刷新会话列表（从详情页返回时）
+onUnmounted(() => {
+  uni.$off('theme-changed', onThemeChanged);
+});
+
+// 每次页面显示时刷新会话列表（从详情页返回时），并重估草稿预览
 onShow(async () => {
+  draftTick.value += 1;
   if (userStore.isLoggedIn) {
     await loadConversations();
   }
+});
+
+// 下拉刷新：强制绕过 TTL 重新拉取会话列表
+onPullDownRefresh(async () => {
+  await loadConversations({ force: true });
+  uni.stopPullDownRefresh();
 });
 
 const loadConversations = async ({ force = false } = {}) => {
@@ -220,11 +345,93 @@ const loadConversations = async ({ force = false } = {}) => {
 // 重试：强制绕过 TTL 重新拉取
 const retryConversations = () => loadConversations({ force: true });
 
+// 群聊最后一条消息是否 @ 了我（按内容包含我的昵称/用户名判断）
+const mentionedMeLast = (conv) => {
+  const u = userStore.getUserInfo || {};
+  const my = [u.nickname, u.username].filter(Boolean);
+  return conv.type === 'GROUP' && my.some(n => conv.lastMessage && conv.lastMessage.includes('@' + n));
+};
+
+// ========== 全局消息搜索（跨会话，输入防抖 400ms） ==========
+const msgResults = ref([]);
+const msgSearching = ref(false);
+let msgSearchTimer = null;
+
+watch(searchKeyword, (kw) => {
+  clearTimeout(msgSearchTimer);
+  const q = kw.trim();
+  if (!q) {
+    msgResults.value = [];
+    msgSearching.value = false;
+    return;
+  }
+  msgSearching.value = true;
+  msgSearchTimer = setTimeout(async () => {
+    try {
+      const res = await get('/api/messages/search/global', { keyword: q, limit: 20 });
+      if (res.code === 200 && kw.trim() === searchKeyword.value.trim()) {
+        msgResults.value = res.data.messages;
+      }
+    } catch (e) {
+      console.error('全局消息搜索失败:', e);
+    } finally {
+      msgSearching.value = false;
+    }
+  }, 400);
+});
+
+const searchConvLabel = (r) => {
+  const u = r.sender || {};
+  const senderName = u.nickname || u.username || '';
+  return r.conversationType === 'GROUP' ? `${r.conversationName} · ${senderName}` : senderName;
+};
+
+// 全局搜索结果的关键词高亮分段
+const highlightGlobal = (content) => {
+  const kw = searchKeyword.value.trim();
+  if (!kw || !content) return [{ hit: false, text: content || '' }];
+  const lower = content.toLowerCase();
+  const k = kw.toLowerCase();
+  const segs = [];
+  let i = 0;
+  for (;;) {
+    const idx = lower.indexOf(k, i);
+    if (idx === -1) {
+      segs.push({ hit: false, text: content.slice(i) });
+      break;
+    }
+    if (idx > i) segs.push({ hit: false, text: content.slice(i, idx) });
+    segs.push({ hit: true, text: content.slice(idx, idx + kw.length) });
+    i = idx + kw.length;
+  }
+  return segs;
+};
+
+const openSearchResult = (r) => {
+  searchKeyword.value = '';
+  msgResults.value = [];
+  // 携带消息 ID：详情页加载后直接定位到该条消息
+  const peer = r.otherUser || {};
+  const targetParams = r.conversationType === 'GROUP'
+    ? `&type=GROUP&name=${encodeURIComponent(r.conversationName || '群聊')}`
+    : `&userId=${encodeURIComponent(peer._id || '')}&nickname=${encodeURIComponent(peer.nickname || peer.username || '')}&username=${encodeURIComponent(peer.username || '')}`;
+  uni.navigateTo({
+    url: `/pages/chat/detail?conversationId=${r.conversationId}${targetParams}&locateMsg=${r._id}`,
+    fail: () => uni.switchTab({ url: '/pages/chat/list' })
+  });
+};
+
 const getLastMessagePreview = (conv) => {
   if (!conv.lastMessage) return '';
-  if (conv.lastMessageType === 'IMAGE') return '[图片]';
-  if (conv.lastMessageType === 'VIDEO') return '[视频]';
-  return conv.lastMessage;
+  let preview = conv.lastMessage;
+  if (conv.lastMessageType === 'IMAGE') preview = '[图片]';
+  else if (conv.lastMessageType === 'VIDEO') preview = '[视频]';
+  else if (conv.lastMessageType === 'VOICE') preview = '[语音]';
+  // 群聊预览带发送者名（微信式），一眼看清是谁说的
+  if (conv.type === 'GROUP' && conv.lastMessageSenderName) {
+    preview = `${conv.lastMessageSenderName}: ${preview}`;
+  }
+  return preview;
 };
 
 
@@ -236,6 +443,85 @@ const onDelete = async (conv) => {
     conversations.value = chatStore.getConversations;
   } catch (err) {
     console.error('删除会话失败:', err);
+  }
+};
+
+// ========== 会话右键/长按快捷菜单 ==========
+const convMenu = ref({ visible: false, x: 0, y: 0, conv: null });
+
+const openConvMenu = (e, conv) => {
+  // #ifdef H5
+  const touch = e.touches && e.touches[0];
+  const x = (touch && touch.clientX) || e.clientX || 0;
+  const y = (touch && touch.clientY) || e.clientY || 0;
+  convMenu.value = {
+    visible: true,
+    x: Math.max(8, Math.min(x, window.innerWidth - 150)),
+    y: Math.max(8, Math.min(y, window.innerHeight - 150)),
+    conv
+  };
+  // #endif
+};
+
+const closeConvMenu = () => {
+  convMenu.value.visible = false;
+};
+
+const menuTogglePin = async () => {
+  const c = convMenu.value.conv;
+  closeConvMenu();
+  if (c) await onTogglePin(c);
+};
+
+const menuToggleMute = async () => {
+  const c = convMenu.value.conv;
+  closeConvMenu();
+  if (c) await onToggleMute(c);
+};
+
+// 标记已读（右键菜单快捷操作，仅在有未读时显示）
+const menuMarkRead = async () => {
+  const c = convMenu.value.conv;
+  closeConvMenu();
+  if (!c || !(c.unreadCount > 0)) return;
+  try {
+    await chatStore.markConversationAsRead(c._id);
+    conversations.value = chatStore.getConversations;
+  } catch (err) {
+    console.error('标记已读失败:', err);
+  }
+};
+
+const menuDelete = async () => {
+  const c = convMenu.value.conv;
+  closeConvMenu();
+  if (c) await onDelete(c);
+};
+
+// ========== 清空聊天记录 ==========
+const showClearModal = ref(false);
+const clearTarget = ref(null);
+const clearTargetName = computed(() => {
+  const c = clearTarget.value;
+  if (!c) return '';
+  return c.type === 'GROUP' ? (c.name || '群聊') : displayName(c);
+});
+
+const menuClearHistory = () => {
+  clearTarget.value = convMenu.value.conv;
+  closeConvMenu();
+  showClearModal.value = true;
+};
+
+const confirmClearHistory = async () => {
+  const c = clearTarget.value;
+  showClearModal.value = false;
+  if (!c) return;
+  try {
+    await chatStore.clearConversationHistory(c._id);
+    uni.showToast({ title: '聊天记录已清空', icon: 'success' });
+  } catch (err) {
+    console.error('清空聊天记录失败:', err);
   }
 };
 
@@ -267,6 +553,45 @@ const onToggleMute = async (conv) => {
 <style scoped>
 .chat-list {
   min-height: 100vh;
+}
+
+/* 顶部标题栏 */
+.list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 32rpx 32rpx 8rpx;
+}
+
+.list-title {
+  font-size: 40rpx;
+  font-weight: 700;
+  color: var(--color-text-primary);
+}
+
+/* 主题快捷切换：玻璃圆钮，日/月图标随生效主题切换 */
+.theme-toggle {
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-card);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1rpx solid var(--glass-border);
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.15s ease;
+}
+
+.theme-toggle:active {
+  transform: scale(0.92);
+}
+
+.theme-toggle-icon {
+  font-size: 34rpx;
+  line-height: 1;
 }
 
 /* 会话列表 */
@@ -442,6 +767,12 @@ html.dark .online-dot {
   white-space: nowrap;
 }
 
+/* 置顶小旗标 */
+.pin-flag {
+  margin-right: 8rpx;
+  flex-shrink: 0;
+}
+
 .time {
   font-size: 24rpx;
   color: var(--color-text-tertiary);
@@ -462,6 +793,111 @@ html.dark .online-dot {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 未发送草稿：红字提示，一眼与普通消息预览区分 */
+.last-message-draft {
+  color: var(--color-error);
+}
+
+/* 有未读会话的最后一条预览加粗 */
+.last-message-unread {
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+/* ========== 全局消息搜索结果 ========== */
+.msg-search-section {
+  margin-bottom: 16rpx;
+}
+
+.msg-search-header {
+  padding: 8rpx 8rpx 12rpx;
+}
+
+.msg-search-title {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.msg-search-item {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  padding: 18rpx 20rpx;
+  margin-bottom: 8rpx;
+  background: var(--color-card);
+  border: 1rpx solid var(--glass-border);
+  border-radius: 16rpx;
+}
+
+.msg-search-item:active {
+  transform: scale(0.98);
+}
+
+.msg-search-conv {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: var(--color-primary);
+  flex-shrink: 0;
+  max-width: 200rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-search-content {
+  flex: 1;
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-search-hit {
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.msg-search-time {
+  font-size: 20rpx;
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+
+/* ========== 会话右键/长按快捷菜单 ========== */
+.conv-menu-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 998;
+}
+
+.conv-menu {
+  position: fixed;
+  background: rgba(50, 50, 52, 0.96);
+  border-radius: 16rpx;
+  padding: 8rpx 0;
+  min-width: 200rpx;
+  box-shadow: 0 8rpx 32rpx rgba(0, 0, 0, 0.2);
+}
+
+.conv-menu-item {
+  padding: 20rpx 36rpx;
+}
+
+.conv-menu-item:active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.conv-menu-item-text {
+  font-size: 28rpx;
+  color: #FFFFFF;
+}
+
+.conv-menu-item-text-danger {
+  color: var(--color-error);
 }
 
 /* 未读徽章 */

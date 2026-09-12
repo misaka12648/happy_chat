@@ -1,7 +1,7 @@
 <template>
   <transition name="base-modal" :duration="{ enter: 250, leave: 200 }">
     <view v-if="visible" class="base-modal-mask" :style="{ zIndex }" @click="onMaskClick">
-      <view class="base-modal" :style="{ width }" @click.stop>
+      <view class="base-modal" :style="{ width }" role="dialog" aria-modal="true" :aria-label="title || '对话框'" @click.stop>
       <!-- 头部：优先使用 header 插槽，否则渲染 title -->
       <view v-if="hasHeaderSlot || title" class="base-modal-header">
         <slot name="header">
@@ -40,7 +40,7 @@
 </template>
 
 <script setup>
-import { useSlots } from 'vue';
+import { useSlots, watch, onUnmounted } from 'vue';
 
 const props = defineProps({
   // 是否显示（配合 v-model:visible 使用）
@@ -82,6 +82,30 @@ const onCancel = () => {
 const onConfirm = () => {
   emit('confirm');
 };
+
+// Esc 关闭弹窗（桌面习惯；与遮罩行为一致：maskClosable=false 时 Esc 也不关）
+const onKeydown = (e) => {
+  // #ifdef H5
+  if (e.key === 'Escape' && props.visible && props.maskClosable) {
+    emit('cancel');
+    close();
+  }
+  // #endif
+};
+
+watch(() => props.visible, (v) => {
+  // #ifdef H5
+  if (typeof document === 'undefined') return;
+  if (v) document.addEventListener('keydown', onKeydown);
+  else document.removeEventListener('keydown', onKeydown);
+  // #endif
+});
+
+onUnmounted(() => {
+  // #ifdef H5
+  if (typeof document !== 'undefined') document.removeEventListener('keydown', onKeydown);
+  // #endif
+});
 </script>
 
 <style scoped>

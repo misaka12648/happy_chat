@@ -25,13 +25,22 @@ router.get('/', async (req, res) => {
     .populate('participants', '-password')
     .sort({ lastMessageTime: -1 });
 
-    // 批量获取每个会话的最后一条消息，生成准确的预览
+    // 我对每位好友的备注映射（key = 好友 userId）
+    const myId = req.user._id.toString();
     const conversationIds = conversations.map(c => c._id);
-    const lastMessagesAgg = await Message.aggregate([
-      { $match: { conversationId: { $in: conversationIds } } },
-      { $sort: { createdAt: -1 } },
-      { $group: { _id: '$conversationId', lastMsg: { $first: '$$ROOT' } } }
-    ]);
+    const lastMessageScopes = conversations.map(conv => {
+      const scope = { conversationId: conv._id, hiddenFor: { $ne: req.user._id } };
+      const clearedAt = conv.clearedAt && conv.clearedAt.get(myId);
+      if (clearedAt) scope.createdAt = { $gt: clearedAt };
+      return scope;
+    });
+    const lastMessagesAgg = conversationIds.length
+      ? await Message.aggregate([
+        { $match: { $or: lastMessageScopes } },
+        { $sort: { createdAt: -1 } },
+        { $group: { _id: '$conversationId', lastMsg: { $first: '$$ROOT' } } }
+      ])
+      : [];
 
     const lastMsgMap = new Map();
     lastMessagesAgg.forEach(item => {
@@ -39,7 +48,6 @@ router.get('/', async (req, res) => {
     });
 
     // 我对每位好友的备注映射（key = 好友 userId）
-    const myId = req.user._id.toString();
     const friendships = await Friendship.find({
       $or: [
         { requester: req.user._id, status: 'ACCEPTED' },
@@ -54,12 +62,15 @@ router.get('/', async (req, res) => {
 
     // 格式化会话列表，用实际最后一条消息生成预览
     const formattedConversations = conversations.map(conv => {
+      const clearedAt = conv.clearedAt && conv.clearedAt.get(myId);
+      const lastMsg = lastMsgMap.get(conv._id.toString());
       const base = {
         _id: conv._id,
         type: conv.type,
-        lastMessage: conv.lastMessage,
-        lastMessageTime: conv.lastMessageTime,
+        lastMessage: clearedAt || !lastMsg ? '' : conv.lastMessage,
+        lastMessageTime: clearedAt || conv.lastMessageTime,
         lastMessageType: conv.lastMessageType,
+        lastMessageSenderName: conv.lastMessageSenderName || '',
         unreadCount: conv.unreadCounts.get(myId) || 0,
         // 当前用户视角的置顶/免打扰状态
         pinned: conv.pinnedFor.some(p => p.toString() === myId),
@@ -91,11 +102,10 @@ router.get('/', async (req, res) => {
         other.remark = remarkMap.get(other._id.toString()) || '';
       }
 
-      let lastMessage = conv.lastMessage;
-      let lastMessageTime = conv.lastMessageTime;
-      let lastMessageType = conv.lastMessageType;
+      let lastMessage = base.lastMessage;
+      let lastMessageTime = base.lastMessageTime;
+      let lastMessageType = base.lastMessageType;
 
-      const lastMsg = lastMsgMap.get(conv._id.toString());
       if (lastMsg) {
         lastMessageTime = lastMsg.createdAt;
         lastMessageType = lastMsg.type;
@@ -360,6 +370,7 @@ router.get('/:id', async (req, res) => {
         type: 'GROUP',
         name: conversation.name,
         owner: conversation.owner,
+        announcement: conversation.announcement || '',
         members: conversation.participants.map(p => ({
           _id: p._id,
           username: p.username,
@@ -399,6 +410,9 @@ router.post('/group', async (req, res) => {
     if (!Array.isArray(memberIds) || memberIds.length === 0) {
       return fail(res, 400, '请至少选择 1 位群成员');
     }
+    if (new Set(memberIds).size !== memberIds.length) {
+      return fail(res, 400, '群成员不能重复');
+    }
     if (memberIds.length + 1 > MAX_GROUP_MEMBERS) {
       return fail(res, 400, `群成员最多 ${MAX_GROUP_MEMBERS} 人`);
     }
@@ -437,6 +451,11 @@ router.post('/group', async (req, res) => {
     const populated = await Conversation.findById(conversation._id)
       .populate('participants', '-password');
 
+    // 通知被拉入的成员（在线时），与邀请入群路由保持一致
+    memberIds.forEach(mid => {
+      sendToUser(mid, 'GROUP_ADDED', { conversationId: conversation._id, name: conversation.name });
+    });
+
     ok(res, {
       _id: populated._id,
       type: 'GROUP',
@@ -453,6 +472,53 @@ router.post('/group', async (req, res) => {
     }, '群聊创建成功', 201);
   } catch (error) {
     console.error('创建群聊错误:', error);
+    fail(res, 500, '服务器内部错误');
+  }
+});
+
+/**
+ * PUT /api/conversations/:id/announcement
+ * 设置群公告（仅群主，≤200 字，空串清除）
+ */
+router.put('/:id/announcement', async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return fail(res, 404, '会话不存在');
+    }
+    const conversation = await Conversation.findById(req.params.id);
+    if (!conversation) {
+      return fail(res, 404, '会话不存在');
+    }
+    if (conversation.type !== 'GROUP') {
+      return fail(res, 400, '仅群聊可以设置公告');
+    }
+    if (conversation.owner.toString() !== req.user._id.toString()) {
+      return fail(res, 403, '仅群主可以设置群公告');
+    }
+    if (typeof req.body.announcement !== 'string') {
+      return fail(res, 400, '公告内容格式错误');
+    }
+    const announcement = req.body.announcement.trim();
+    if (announcement.length > 200) {
+      return fail(res, 400, '群公告最多 200 字');
+    }
+    conversation.announcement = announcement;
+    await conversation.save();
+
+    // 实时推送给其他成员（在线时）：浏览该群的公告条即时更新，未浏览的弹提示
+    conversation.participants.forEach(p => {
+      if (p.toString() !== req.user._id.toString()) {
+        sendToUser(p.toString(), 'GROUP_ANNOUNCEMENT', {
+          conversationId: conversation._id,
+          announcement,
+          name: conversation.name
+        });
+      }
+    });
+
+    ok(res, { announcement });
+  } catch (error) {
+    console.error('设置群公告错误:', error);
     fail(res, 500, '服务器内部错误');
   }
 });
@@ -513,6 +579,9 @@ router.put('/:id/members', async (req, res) => {
     const { memberIds } = req.body;
     if (!Array.isArray(memberIds) || memberIds.length === 0) {
       return fail(res, 400, '请选择要邀请的成员');
+    }
+    if (new Set(memberIds).size !== memberIds.length) {
+      return fail(res, 400, '群成员不能重复');
     }
     if (conversation.participants.length + memberIds.length > MAX_GROUP_MEMBERS) {
       return fail(res, 400, `群成员最多 ${MAX_GROUP_MEMBERS} 人`);
@@ -586,12 +655,24 @@ router.post('/:id/quit', async (req, res) => {
       return fail(res, 403, '你不是该群成员');
     }
 
+    const quitter = await User.findById(req.user._id).select('nickname username');
+    const remaining = conversation.participants.filter(p => p.toString() !== req.user._id.toString());
     conversation.participants.pull(req.user._id);
     conversation.unreadCounts.delete(req.user._id.toString());
+    conversation.clearedAt.delete(req.user._id.toString());
     conversation.pinnedFor.pull(req.user._id);
     conversation.mutedFor.pull(req.user._id);
     conversation.hiddenFor.pull(req.user._id);
     await conversation.save();
+
+    // 通知剩余成员有人退群（在线时），前端刷新成员与列表
+    remaining.forEach(mid => {
+      sendToUser(mid.toString(), 'GROUP_MEMBER_LEFT', {
+        conversationId: conversation._id,
+        name: conversation.name,
+        nickname: quitter ? (quitter.nickname || quitter.username) : '有成员'
+      });
+    });
 
     ok(res, null, '已退出群聊');
   } catch (error) {
@@ -619,6 +700,13 @@ router.delete('/:id/group', async (req, res) => {
     if (conversation.owner.toString() !== req.user._id.toString()) {
       return fail(res, 403, '仅群主可以解散群聊');
     }
+
+    // 通知除群主外的全部成员群已解散（在线时），前端移除会话并退出详情页
+    conversation.participants.forEach(p => {
+      if (p.toString() !== req.user._id.toString()) {
+        sendToUser(p.toString(), 'GROUP_DISBANDED', { conversationId: conversation._id, name: conversation.name });
+      }
+    });
 
     await Message.deleteMany({ conversationId: conversation._id });
     await conversation.deleteOne();

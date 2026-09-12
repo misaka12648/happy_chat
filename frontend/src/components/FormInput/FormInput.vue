@@ -3,25 +3,30 @@
     <view class="input-wrapper" :class="{ focused }" :style="{ height }">
       <uni-icons class="input-icon" :type="icon" :size="iconSize" :color="iconColor" />
       <input
+        ref="inputRef"
         class="input"
         :style="{ fontSize }"
-        :type="type"
+        :type="inputType"
         :value="modelValue"
         :placeholder="placeholder"
         placeholder-class="placeholder"
         @input="onInput"
         @focus="focused = true"
-        @blur="focused = false"
+        @blur="onBlur"
         @confirm="$emit('confirm')"
       />
+      <!-- 密码框右侧明文切换：输错时可见，减少盲打挫败 -->
+      <view v-if="type === 'password'" class="eye-btn" @click="toggleVisible">
+        <uni-icons :type="visible ? 'eye-slash' : 'eye'" size="20" color="var(--color-icon-muted)" />
+      </view>
     </view>
   </view>
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { ref, computed, nextTick } from 'vue';
 
-defineProps({
+const props = defineProps({
   modelValue: { type: String, default: '' },
   // uni-icons 图标类型（如 person / locked / star）
   icon: { type: String, default: '' },
@@ -36,11 +41,33 @@ defineProps({
   iconColor: { type: String, default: '#9CA3AF' }
 });
 
-const emit = defineEmits(['update:modelValue', 'confirm']);
+const emit = defineEmits(['update:modelValue', 'confirm', 'blur']);
 const focused = ref(false);
+const visible = ref(false);
+const inputRef = ref(null);
+
+const inputType = computed(() => (props.type === 'password' && !visible.value ? 'password' : 'text'));
 
 const onInput = (e) => {
   emit('update:modelValue', e.detail.value);
+};
+
+const onBlur = (e) => {
+  focused.value = false;
+  emit('blur', e);
+};
+
+// 切换明文/密文：type 变化会让原生 input 失焦，切完把焦点与光标放回末尾
+const toggleVisible = () => {
+  visible.value = !visible.value;
+  nextTick(() => {
+    const root = inputRef.value && inputRef.value.$el ? inputRef.value.$el : inputRef.value;
+    const input = root && (root.tagName === 'INPUT' ? root : root.querySelector('input'));
+    if (!input) return;
+    input.focus();
+    const len = String(input.value || '').length;
+    try { input.setSelectionRange(len, len); } catch (e) { /* 部分类型不支持 */ }
+  });
 };
 </script>
 
@@ -60,7 +87,7 @@ const onInput = (e) => {
 }
 
 .input-wrapper.focused {
-  background: #FFFFFF;
+  background: var(--color-card-solid);
   border-color: var(--color-primary);
   box-shadow: 0 0 0 4rpx rgba(255, 107, 107, 0.1);
 }
@@ -77,5 +104,14 @@ const onInput = (e) => {
 
 .placeholder {
   color: var(--color-text-tertiary);
+}
+
+.eye-btn {
+  padding: 12rpx;
+  margin-right: -12rpx;
+}
+
+.eye-btn:active {
+  opacity: 0.6;
 }
 </style>

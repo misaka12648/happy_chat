@@ -27,11 +27,18 @@
         icon="person"
         type="text"
         placeholder="用户名 (3-20个字符)"
-        margin-bottom="24rpx"
+        margin-bottom="8rpx"
         height="96rpx"
         icon-size="32rpx"
         font-size="28rpx"
+        @blur="onUsernameBlur"
       />
+
+      <!-- 用户名可用性实时提示（失焦时检查） -->
+      <view v-if="usernameCheck.text" class="username-check">
+        <text class="username-check-text" :class="usernameCheck.available ? 'username-check-ok' : 'username-check-bad'">{{ usernameCheck.text }}</text>
+      </view>
+      <view v-else class="username-check username-check-spacer"></view>
 
       <FormInput
         v-model="nickname"
@@ -55,6 +62,16 @@
         font-size="28rpx"
       />
 
+      <!-- 密码强度提示：长度 + 字符种类实时评估 -->
+      <view v-if="password" class="pwd-strength">
+        <view class="pwd-strength-bars">
+          <view class="pwd-bar" :class="{ 'pwd-bar-on pwd-bar-weak': strength === 1 }"></view>
+          <view class="pwd-bar" :class="{ 'pwd-bar-on pwd-bar-mid': strength === 2 }"></view>
+          <view class="pwd-bar" :class="{ 'pwd-bar-on pwd-bar-strong': strength >= 3 }"></view>
+        </view>
+        <text class="pwd-strength-text" :class="'pwd-text-' + strength">{{ strengthLabel }}</text>
+      </view>
+
       <FormInput
         v-model="confirmPassword"
         icon="locked"
@@ -64,7 +81,13 @@
         height="96rpx"
         icon-size="32rpx"
         font-size="28rpx"
+        @confirm="handleRegister"
       />
+
+      <!-- 两次密码不一致实时提示 -->
+      <view v-if="confirmMismatch" class="pwd-mismatch">
+        <text class="pwd-mismatch-text">两次输入的密码不一致</text>
+      </view>
 
       <view class="btn-register-wrap">
         <GradientButton
@@ -87,8 +110,9 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { useUserStore } from '@/store/user';
+import { get } from '@/utils/request';
 import FormInput from '@/components/FormInput/FormInput.vue';
 import GradientButton from '@/components/GradientButton/GradientButton.vue';
 
@@ -98,6 +122,53 @@ const nickname = ref('');
 const password = ref('');
 const confirmPassword = ref('');
 const loading = ref(false);
+
+// 密码强度：长度与字符种类综合评分（0 无 / 1 弱 / 2 中 / 3 强）
+const strength = computed(() => {
+  const p = password.value;
+  if (!p) return 0;
+  let s = 0;
+  if (p.length >= 6) s++;
+  if (p.length >= 10) s++;
+  if (/[a-zA-Z]/.test(p) && /\d/.test(p)) s++;
+  if (/[^a-zA-Z0-9]/.test(p)) s++;
+  return Math.min(3, s);
+});
+
+const strengthLabel = computed(() => ['太短', '弱', '中', '强'][strength.value] || '');
+
+// 用户名可用性检查（失焦触发，查询后端注册名占用）
+const usernameCheck = ref({ available: null, text: '' });
+const checkUsername = async (v) => {
+  const name = (v || '').trim();
+  if (!name) {
+    usernameCheck.value = { available: null, text: '' };
+    return;
+  }
+  if (name.length < 3 || name.length > 20) {
+    usernameCheck.value = { available: false, text: '用户名应为 3-20 个字符' };
+    return;
+  }
+  try {
+    const res = await get(`/api/auth/check-username`, { username: name });
+    if (res.code === 200) {
+      usernameCheck.value = res.data.available
+        ? { available: true, text: '√ 该用户名可用' }
+        : { available: false, text: res.data.reason || '该用户名不可用' };
+    }
+  } catch (e) {
+    // 检查接口异常不打断注册流程
+  }
+};
+
+const onUsernameBlur = () => {
+  checkUsername(username.value);
+};
+
+// 确认密码实时一致性校验：仅当已填写且与首字段不一致时提示
+const confirmMismatch = computed(() => {
+  return confirmPassword.value.length > 0 && confirmPassword.value !== password.value;
+});
 
 const handleRegister = async () => {
   if (!username.value || !password.value) {
@@ -121,6 +192,8 @@ const handleRegister = async () => {
   const result = await userStore.register(username.value, password.value, nickname.value);
   loading.value = false;
   if (result.success) {
+    // 记住用户名：注册即登录，之后退出登录回登录页时自动回填
+    uni.setStorageSync('lastLoginUsername', username.value.trim());
     uni.showToast({ title: '注册成功', icon: 'success' });
     setTimeout(() => {
       uni.switchTab({ url: '/pages/chat/list' });
@@ -147,6 +220,76 @@ const goLogin = () => {
   padding-top: 20rpx;
   position: relative;
   overflow: hidden;
+}
+
+/* ========== 密码强度条 ========== */
+.pwd-strength {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  margin: -8rpx 0 24rpx;
+  padding: 0 12rpx;
+}
+
+.pwd-strength-bars {
+  display: flex;
+  gap: 8rpx;
+  flex: 1;
+}
+
+.pwd-bar {
+  height: 8rpx;
+  flex: 1;
+  border-radius: 4rpx;
+  background: var(--color-toggle-off);
+  transition: background 0.25s ease;
+}
+
+.pwd-bar-on.pwd-bar-weak { background: var(--color-error); }
+.pwd-bar-on.pwd-bar-mid { background: var(--color-warning); }
+.pwd-bar-on.pwd-bar-strong { background: var(--color-success); }
+
+.pwd-strength-text {
+  font-size: 22rpx;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.pwd-text-1 { color: var(--color-error); }
+.pwd-text-2 { color: var(--color-warning); }
+.pwd-text-3 { color: var(--color-success); }
+
+/* 两次密码不一致提示 */
+.pwd-mismatch {
+  margin: -8rpx 0 24rpx;
+  padding: 0 12rpx;
+}
+
+.pwd-mismatch-text {
+  font-size: 22rpx;
+  color: var(--color-error);
+}
+
+/* 用户名可用性提示 */
+.username-check {
+  padding: 0 12rpx 12rpx;
+  min-height: 32rpx;
+}
+
+.username-check-spacer {
+  min-height: 20rpx;
+}
+
+.username-check-text {
+  font-size: 22rpx;
+}
+
+.username-check-ok {
+  color: var(--color-success);
+}
+
+.username-check-bad {
+  color: var(--color-error);
 }
 
 /* 背景装饰 */

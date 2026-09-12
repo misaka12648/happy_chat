@@ -84,6 +84,19 @@ const messageSchema = new mongoose.Schema({
     },
     mediaUrl: { type: String, default: '' },
     thumbnailUrl: { type: String, default: '' }
+  },
+  // 本地删除：按用户隐藏该消息（仅自己视角，对方不受影响）
+  hiddenFor: {
+    type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
+    default: []
+  },
+  // 表情回应：[{ emoji, users }]，同一表情同一用户仅一条记录（切换即加/删）
+  reactions: {
+    type: [{
+      emoji: { type: String, required: true },
+      users: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
+    }],
+    default: []
   }
 }, {
   timestamps: true

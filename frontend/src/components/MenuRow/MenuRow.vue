@@ -4,6 +4,8 @@
       <uni-icons :type="icon" :size="iconSize" :color="iconColor" />
     </view>
     <text class="menu-text">{{ text }}</text>
+    <!-- 右侧自定义区：开关/当前状态文本等（设置项状态直观可见） -->
+    <slot name="right"></slot>
     <uni-icons v-if="showArrow" class="menu-arrow" type="forward" size="20" color="var(--color-icon-muted)" />
   </view>
 </template>
