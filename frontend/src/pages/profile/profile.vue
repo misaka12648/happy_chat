@@ -21,6 +21,10 @@
             :blur="true"
           />
           <view class="avatar-glow"></view>
+          <!-- 相机角标（微信式）：明示"点头像可换头像"，置于 wrapper 内随整块一起被点击 -->
+          <view class="avatar-camera">
+            <uni-icons type="camera-filled" size="14" color="#FFFFFF"></uni-icons>
+          </view>
         </view>
         <view class="user-meta">
           <view v-if="profileViewState === 'loading'" class="header-status">
@@ -178,7 +182,7 @@
 
     <!-- 底部版本信息 -->
     <view class="footer">
-      <text class="version">HappyChat v1.0.0</text>
+      <text class="version">HappyChat {{ versionText }}</text>
     </view>
 
     <!-- 编辑资料弹窗 -->
@@ -361,7 +365,7 @@
           <text class="about-icon">💬</text>
         </view>
         <text class="about-title">HappyChat</text>
-        <text class="about-version">v1.0.0</text>
+        <text class="about-version">{{ versionText }}</text>
       </template>
       <view class="about-body">
         <text class="about-line">与好友分享每一刻的点对点聊天应用</text>
@@ -408,6 +412,11 @@ const confirmPassword = ref('');
 
 // 关于弹窗状态
 const showAboutModal = ref(false);
+
+// 构建版本：App.vue 启动时把 /api/version 返回值写入本地存储（无 v 前缀），空则兜底 1.0.0
+const appVersion = ref('1.0.0');
+// 统一拼 v 前缀的展示值：避免两处模板各自手写拼接出错，也防止兜底值出现 "vv" 双前缀
+const versionText = computed(() => 'v' + appVersion.value);
 
 // ========== 通知 / 提示音 / 深色模式 设置状态 ==========
 const notifyOn = ref(false);
@@ -518,6 +527,8 @@ onMounted(async () => {
   notifyOn.value = isNotificationEnabled();
   soundOn.value = isSoundEnabled();
   themeMode.value = getThemeMode();
+  // 读取真实构建版本（App.vue 启动检查时写入；本地存储为空时保持兜底值）
+  appVersion.value = uni.getStorageSync('app_version') || '1.0.0';
   refreshDraftCount();
   refreshNotifyStatus();
 
@@ -1373,5 +1384,24 @@ const confirmCrop = async () => {
   font-size: 24rpx;
   color: var(--color-text-tertiary);
   margin-top: 8rpx;
+}
+
+/* ========== 头像相机角标 ========== */
+/* 微信式角标：渐变底 + 白描边，明示头像可点击更换；
+   .avatar-wrapper 已有 position: relative（avatar-glow 同为绝对定位），直接定右下角 */
+.avatar-camera {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 64rpx;
+  height: 64rpx;
+  border-radius: 50%;
+  background: var(--gradient-primary);
+  border: 4rpx solid #FFFFFF;
+  box-shadow: 0 4rpx 12rpx rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1; /* 压过 avatar-glow 光晕，保证角标清晰可点 */
 }
 </style>
