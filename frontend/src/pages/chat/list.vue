@@ -1,20 +1,31 @@
 <template>
   <view class="chat-list">
-    <!-- 顶部标题栏：主题快捷切换（免进设置一步切换明暗） -->
+    <!-- 顶部标题栏：主题快捷切换 + 发起聊天入口（微信式 + 菜单） -->
     <view class="list-header">
       <text class="list-title">消息</text>
-      <view class="theme-toggle" aria-label="切换深色模式" @click="onToggleTheme">
-        <text class="theme-toggle-icon">{{ isDarkTheme ? '☀️' : '🌙' }}</text>
+      <view class="header-actions">
+        <view class="header-action-btn" aria-label="发起聊天" @click="onStartChat">
+          <uni-icons type="plusempty" size="22" color="var(--color-nav-icon)" />
+        </view>
+        <view class="header-action-btn" aria-label="切换深色模式" @click="onToggleTheme">
+          <text class="theme-toggle-icon">{{ isDarkTheme ? '☀️' : '🌙' }}</text>
+        </view>
       </view>
     </view>
 
     <!-- 搜索栏 -->
     <SearchBar v-model="searchKeyword" placeholder="搜索聊天记录" />
 
-    <!-- 全局消息搜索结果（有搜索词时置于最上方，不受会话过滤空态影响） -->
-    <view v-if="searchKeyword && msgResults.length" class="conversation-list msg-search-section">
+    <!-- 全局消息搜索结果（有搜索词时置于最上方，不受会话过滤空态影响）；
+         请求进行中也保留区块（msgSearching），让用户看到"正在搜"而非区块凭空消失 -->
+    <view v-if="searchKeyword && (msgSearching || msgResults.length)" class="conversation-list msg-search-section">
       <view class="msg-search-header">
         <text class="msg-search-title">相关消息</text>
+        <!-- 搜索中：标题右侧小 spinner + 文案，明确反馈请求进行中 -->
+        <view v-if="msgSearching" class="msg-search-loading">
+          <view class="msg-search-spinner"></view>
+          <text class="msg-search-loading-text">搜索中</text>
+        </view>
       </view>
       <view
         v-for="r in msgResults"
@@ -30,6 +41,10 @@
           </template>
         </view>
         <text class="msg-search-time">{{ formatListTime(r.createdAt) }}</text>
+      </view>
+      <!-- 本轮已搜完且零命中：明确"搜过但没搜到"，与"还没搜"区分（防抖/请求期间不显示） -->
+      <view v-if="!msgSearching && msgSearched && !msgResults.length && searchKeyword" class="msg-search-empty">
+        <text class="msg-search-empty-text">没有找到相关消息</text>
       </view>
     </view>
 
@@ -47,13 +62,25 @@
       @retry="retryConversations"
     />
 
-    <!-- 空态：搜索无结果与真空态文案区分 -->
+    <!-- 空态（无搜索词）：StateView 与引导按钮同显同隐，一步直达通讯录添加朋友 -->
+    <view
+      v-else-if="viewState === 'ready' && filteredConversations.length === 0 && !searchKeyword"
+      class="empty-state-wrap"
+    >
+      <StateView state="empty" icon="💬" title="暂无聊天记录" subtitle="去通讯录找朋友聊天吧" />
+      <!-- 渐变小按钮：比纯文案更强的行动引导，负 margin 上移贴近插画 -->
+      <view class="empty-add-btn" @click="goContacts">
+        <text class="empty-add-btn-text">去添加朋友</text>
+      </view>
+    </view>
+
+    <!-- 空态（有搜索词）：仅提示换关键词，结果反馈由上方"相关消息"区块承担 -->
     <StateView
       v-else-if="filteredConversations.length === 0"
       state="empty"
-      :icon="searchKeyword ? '🔍' : '💬'"
-      :title="searchKeyword ? '未找到相关会话' : '暂无聊天记录'"
-      :subtitle="searchKeyword ? '换个关键词，或看看上方相关消息' : '去通讯录找朋友聊天吧'"
+      icon="🔍"
+      title="未找到相关会话"
+      subtitle="换个关键词，或看看上方相关消息"
     />
 
     <!-- 会话列表 -->
@@ -151,6 +178,15 @@
     </view>
   </view>
 
+  <!-- 删除会话确认弹窗（左滑/右键删除误触率高，需二次确认；消息保留可恢复） -->
+  <BaseModal
+    v-model:visible="showDeleteModal"
+    title="删除会话"
+    :content="`将删除与「${deleteTargetName}」的会话，聊天记录会保留，重新收到消息后会话自动恢复。确定删除吗？`"
+    confirm-text="删除"
+    @confirm="confirmDeleteConversation"
+  />
+
   <!-- 清空聊天记录确认弹窗 -->
   <BaseModal
     v-model:visible="showClearModal"
@@ -193,6 +229,23 @@ const onThemeChanged = (mode) => {
 const onToggleTheme = () => {
   const next = toggleTheme();
   uni.showToast({ title: next === 'dark' ? '已切换至深色模式' : '已切换至浅色模式', icon: 'none' });
+};
+
+// 发起聊天入口（微信式 + 菜单）：群聊直达通讯录建群弹窗，加朋友直达搜索
+const onStartChat = () => {
+  uni.showActionSheet({
+    itemList: ['发起群聊', '添加朋友'],
+    success: (res) => {
+      if (res.tapIndex === 0) {
+        uni.switchTab({
+          url: '/pages/contacts/contacts',
+          success: () => uni.$emit('open-group-modal')
+        });
+      } else if (res.tapIndex === 1) {
+        uni.switchTab({ url: '/pages/contacts/contacts' });
+      }
+    }
+  });
 };
 
 // TabBar 未读徽标：免打扰会话不计入；99+ 封顶；无未读时移除徽标。
@@ -345,6 +398,11 @@ const loadConversations = async ({ force = false } = {}) => {
 // 重试：强制绕过 TTL 重新拉取
 const retryConversations = () => loadConversations({ force: true });
 
+// 空态引导按钮：一步直达通讯录添加朋友（switchTab 因通讯录是 tabBar 页）
+const goContacts = () => {
+  uni.switchTab({ url: '/pages/contacts/contacts' });
+};
+
 // 群聊最后一条消息是否 @ 了我（按内容包含我的昵称/用户名判断）
 const mentionedMeLast = (conv) => {
   const u = userStore.getUserInfo || {};
@@ -355,18 +413,24 @@ const mentionedMeLast = (conv) => {
 // ========== 全局消息搜索（跨会话，输入防抖 400ms） ==========
 const msgResults = ref([]);
 const msgSearching = ref(false);
+// 本轮搜索是否已完成：请求 finally 置 true，关键词变化即复位。
+// 用于区分"搜完没有结果"与"还没开始搜"，驱动无结果文案的显隐
+const msgSearched = ref(false);
 let msgSearchTimer = null;
 
 watch(searchKeyword, (kw) => {
   clearTimeout(msgSearchTimer);
   const q = kw.trim();
+  // 关键词变化即进入新一轮：完成标记先复位，避免残留上一轮的"无结果"提示
+  msgSearched.value = false;
   if (!q) {
     msgResults.value = [];
     msgSearching.value = false;
     return;
   }
-  msgSearching.value = true;
   msgSearchTimer = setTimeout(async () => {
+    // 防抖等待期不算"搜索中"，真正发起请求时才置 true（spinner 仅覆盖请求期间）
+    msgSearching.value = true;
     try {
       const res = await get('/api/messages/search/global', { keyword: q, limit: 20 });
       if (res.code === 200 && kw.trim() === searchKeyword.value.trim()) {
@@ -376,6 +440,8 @@ watch(searchKeyword, (kw) => {
       console.error('全局消息搜索失败:', e);
     } finally {
       msgSearching.value = false;
+      // 无论成功失败都视为"已搜完"，零结果时才能展示无结果文案
+      msgSearched.value = true;
     }
   }, 400);
 });
@@ -436,10 +502,26 @@ const getLastMessagePreview = (conv) => {
 
 
 
-// 删除会话（后端软隐藏，消息不删）
-const onDelete = async (conv) => {
+// ========== 删除会话（二次确认；后端软隐藏，消息不删） ==========
+const showDeleteModal = ref(false);
+const deleteTarget = ref(null);
+const deleteTargetName = computed(() => {
+  const c = deleteTarget.value;
+  if (!c) return '';
+  return c.type === 'GROUP' ? (c.name || '群聊') : displayName(c);
+});
+
+const onDelete = (conv) => {
+  deleteTarget.value = conv;
+  showDeleteModal.value = true;
+};
+
+const confirmDeleteConversation = async () => {
+  const c = deleteTarget.value;
+  showDeleteModal.value = false;
+  if (!c) return;
   try {
-    await chatStore.deleteConversation(conv._id);
+    await chatStore.deleteConversation(c._id);
     conversations.value = chatStore.getConversations;
   } catch (err) {
     console.error('删除会话失败:', err);
@@ -569,8 +651,14 @@ const onToggleMute = async (conv) => {
   color: var(--color-text-primary);
 }
 
-/* 主题快捷切换：玻璃圆钮，日/月图标随生效主题切换 */
-.theme-toggle {
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 20rpx;
+}
+
+/* 头部圆形按钮（发起聊天 + 主题切换共用视觉） */
+.header-action-btn {
   width: 72rpx;
   height: 72rpx;
   border-radius: 50%;
@@ -585,7 +673,7 @@ const onToggleMute = async (conv) => {
   transition: transform 0.15s ease;
 }
 
-.theme-toggle:active {
+.header-action-btn:active {
   transform: scale(0.92);
 }
 
@@ -614,9 +702,9 @@ const onToggleMute = async (conv) => {
   overflow: hidden;
 }
 
-/* 置顶会话：左侧品牌紫标识条 */
+/* 置顶会话：微信式灰底区分（名字旁另有小旗标双重标识） */
 .conv-pinned .conversation-item {
-  border-left: 8rpx solid var(--color-secondary);
+  background: var(--color-quote-bg);
 }
 
 .conversation-item {
@@ -930,5 +1018,80 @@ html.dark .online-dot {
   background: var(--color-text-tertiary);
   margin-left: 16rpx;
   flex-shrink: 0;
+}
+
+/* ========== 全局消息搜索状态反馈 ========== */
+/* 标题靠左、加载状态靠右（在原有 padding 基础上补充 flex 布局） */
+.msg-search-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* 搜索中状态：spinner + 弱文案 */
+.msg-search-loading {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+
+/* 18rpx 旋转圆环：顶边主题色、其余玻璃边框；keyframes 单独命名避免与全局动画冲突 */
+.msg-search-spinner {
+  width: 18rpx;
+  height: 18rpx;
+  border: 3rpx solid var(--glass-border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: msg-search-spin 0.8s linear infinite;
+}
+
+@keyframes msg-search-spin {
+  to { transform: rotate(360deg); }
+}
+
+.msg-search-loading-text {
+  font-size: 22rpx;
+  color: var(--color-text-tertiary);
+}
+
+/* 搜索完成但零命中：一行居中弱文案，区分"搜过没有"与"还没搜" */
+.msg-search-empty {
+  padding: 20rpx 0;
+  text-align: center;
+}
+
+.msg-search-empty-text {
+  font-size: 24rpx;
+  color: var(--color-text-tertiary);
+}
+
+/* ========== 空态引导 ========== */
+/* 包裹层：让空态 StateView 与引导按钮同显同隐 */
+.empty-state-wrap {
+  padding: 0 24rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+/* 渐变引导按钮：负 margin 上移贴近插画（StateView lg 自带 200rpx 上下内边距） */
+.empty-add-btn {
+  margin-top: -120rpx;
+  background: var(--gradient-primary);
+  border-radius: 999rpx;
+  padding: 16rpx 48rpx;
+  box-shadow: 0 4rpx 16rpx rgba(255, 107, 107, 0.25);
+  transition: transform 0.15s ease;
+}
+
+.empty-add-btn:active {
+  transform: scale(0.95);
+}
+
+.empty-add-btn-text {
+  color: #FFFFFF;
+  font-size: 26rpx;
+  font-weight: 600;
+  letter-spacing: 2rpx;
 }
 </style>
