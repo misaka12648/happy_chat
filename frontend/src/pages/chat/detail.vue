@@ -7,9 +7,18 @@
       </view>
       <view class="nav-title-wrap" @click="isGroup && openGroupInfo()">
         <text class="nav-title">{{ otherNickname || '聊天' }}</text>
-        <text class="nav-subtitle" v-if="peerTyping && !isGroup">对方正在输入…</text>
+        <!-- 正在输入：三点跳动动画比静态省略号更有"实时"感 -->
+        <view v-if="peerTyping && !isGroup" class="nav-subtitle nav-subtitle-typing">
+          <text class="nav-subtitle-typing-text">对方正在输入</text>
+          <view class="typing-dots">
+            <view class="typing-dot"></view>
+            <view class="typing-dot"></view>
+            <view class="typing-dot"></view>
+          </view>
+        </view>
         <text class="nav-subtitle" v-else-if="isGroup">{{ memberCount }} 人 · 群信息</text>
         <text class="nav-subtitle nav-subtitle-online" v-else-if="otherOnline">● 在线</text>
+        <text class="nav-subtitle" v-else-if="otherLastSeen">最后在线 {{ formatListTime(otherLastSeen) }}</text>
         <text class="nav-subtitle" v-else-if="otherUsername">@{{ otherUsername }}</text>
       </view>
       <view class="nav-search-btn" aria-label="搜索聊天记录" @click="toggleSearch">
@@ -30,13 +39,27 @@
             confirm-type="search"
             @confirm="doSearch"
           />
-          <view v-if="searchKeyword" class="search-panel-clear" @click="clearSearch">
-            <uni-icons type="clear" size="18" color="var(--color-icon-muted)" />
-          </view>
-          <view class="search-panel-go" @click="doSearch">
-            <text class="search-panel-go-text">搜索</text>
+        <view v-if="searchKeyword" class="search-panel-clear" @click="clearSearch">
+          <uni-icons type="clear" size="18" color="var(--color-icon-muted)" />
+        </view>
+        <view class="search-panel-go" @click="doSearch">
+          <text class="search-panel-go-text">搜索</text>
+        </view>
+      </view>
+      <!-- 最近搜索：无关键词时展示，一键复搜（全局共享，最多 5 条） -->
+      <view v-if="!searchKeyword && searchHistory.length" class="search-history">
+        <view class="search-history-head">
+          <text class="search-history-title">最近搜索</text>
+          <view class="search-history-clear" @click="clearSearchHistory">
+            <uni-icons type="trash" size="14" color="var(--color-icon-muted)" />
           </view>
         </view>
+        <view class="search-history-chips">
+          <view v-for="h in searchHistory" :key="h" class="search-history-chip" @click="useHistoryKeyword(h)">
+            <text class="search-history-chip-text">{{ h }}</text>
+          </view>
+        </view>
+      </view>
         <scroll-view scroll-y class="search-results">
           <view v-if="searching" class="search-state">
             <text class="search-state-text">搜索中…</text>
@@ -65,13 +88,14 @@
       </view>
     </transition>
 
-    <!-- 消息列表 -->
-    <scroll-view
-      class="message-list"
-      scroll-y
-      :scroll-into-view="scrollToView"
-      @scrolltoupper="loadMoreMessages"
-    >
+    <!-- 消息列表（独立成层：回到底部按钮锚定此区域，点击空白收起面板） -->
+    <view class="list-area" @click="onMessageAreaClick">
+      <scroll-view
+        class="message-list"
+        scroll-y
+        :scroll-into-view="scrollToView"
+        @scrolltoupper="loadMoreMessages"
+      >
       <!-- 群公告条（随内容滚动，点击展开查看群信息） -->
       <view v-if="isGroup && groupAnnouncement" class="announcement-bar" @click="openGroupInfo()">
         <uni-icons type="sound-filled" size="14" color="var(--color-primary)" />
@@ -84,8 +108,13 @@
           <text class="msg-load-retry-text">点击重试</text>
         </view>
       </view>
-      <!-- 空会话：快捷打招呼 -->
-      <view v-if="!messages.length && !msgLoadFailed" class="empty-chat">
+      <!-- 首屏消息加载中：居中 spinner，避免空会话引导语在加载期间误闪 -->
+      <view v-if="initialLoading" class="initial-loading">
+        <view class="load-more-spinner"></view>
+      </view>
+
+      <!-- 空会话：快捷打招呼（仅在首屏加载完成且确实无消息时展示） -->
+      <view v-if="!messages.length && !msgLoadFailed && !initialLoading" class="empty-chat">
         <text class="empty-chat-emoji">👋</text>
         <text class="empty-chat-text">和 {{ isGroup ? '群友们' : (otherNickname || '对方') }} 打个招呼吧</text>
         <view class="empty-chat-chips">
@@ -94,8 +123,10 @@
           </view>
         </view>
       </view>
-      <view v-if="hasMore" class="load-more">
-        <text class="load-more-text" @click="loadMoreMessages">加载更多</text>
+      <!-- 翻页加载历史：进行中显示 spinner，空闲时保留手动兜底入口 -->
+      <view v-if="hasMore || historyLoading" class="load-more">
+        <view v-if="historyLoading" class="load-more-spinner"></view>
+        <text v-else class="load-more-text" @click="loadMoreMessages">加载更多</text>
       </view>
       
       <view
@@ -103,7 +134,7 @@
         :key="msg._id"
         :id="'msg-' + msg._id"
         class="message-item"
-        :class="{ 'message-self': msg.sender._id === currentUserId, 'message-selecting': multiSelectMode }"
+        :class="{ 'message-self': msg.sender._id === currentUserId, 'message-selecting': multiSelectMode, 'message-item--grouped': isContinuation(index) }"
         @click.capture="onSelectCaptureClick(msg, $event)"
       >
         <!-- 多选模式：外沿选择圈 -->
@@ -132,11 +163,11 @@
           <text v-if="canEditRecalled(msg)" class="recall-edit" @click="doEditRecalled(msg)">编辑</text>
         </view>
 
-        <!-- 消息行：头像两侧，气泡靠头像；群聊点他人头像快捷 @ -->
-        <view v-else class="message-row">
+          <!-- 消息行：头像两侧，气泡靠头像；群聊点他人头像快捷 @，私聊点头像看大图 -->
+          <view v-else class="message-row">
           <view
             class="msg-avatar-btn"
-            :class="{ 'msg-avatar-btn--plain': msg.sender._id === currentUserId }"
+            :class="{ 'msg-avatar-btn--plain': isGroup && msg.sender._id === currentUserId }"
             @click.stop="onAvatarClick(msg)"
           >
             <AppAvatar
@@ -151,22 +182,28 @@
           </view>
 
           <view class="bubble-col" :class="{ 'bubble-col-self': msg.sender._id === currentUserId }">
-            <!-- 群聊：他人消息气泡上方显示发送者昵称 -->
-            <text v-if="isGroup && msg.sender._id !== currentUserId" class="group-sender-name">{{ msg.sender.nickname || msg.sender.username }}</text>
-            <view class="bubble" :class="{ 'bubble-self': msg.sender._id === currentUserId }" :title="fullTime(msg.createdAt)" @longpress="onLongPress($event, msg)">
-            <!-- 回复引用块 -->
+            <!-- 群聊：他人消息气泡上方显示发送者昵称（同一人连续发言且未跨时间分隔时仅首条显示） -->
+            <text v-if="isGroup && msg.sender._id !== currentUserId && showSenderName(index)" class="group-sender-name">{{ msg.sender.nickname || msg.sender.username }}</text>
+            <view class="bubble" :class="{ 'bubble-self': msg.sender._id === currentUserId }" :title="fullTime(msg.createdAt)" @longpress="onLongPress($event, msg)" @contextmenu.prevent="onBubbleContextMenu($event, msg)">
+            <!-- 回复引用块（被回复的是图片时附缩略图，比"[图片]"文字更直观） -->
             <view v-if="msg.replyInfo && msg.replyInfo.messageId" class="reply-quote" @click="scrollToMessage(msg.replyInfo.messageId)">
               <uni-icons type="undo" size="24rpx" :color="msg.sender._id === currentUserId ? 'rgba(255, 255, 255, 0.6)' : '#9CA3AF'" />
               <view class="reply-content">
                 <text class="reply-sender">{{ msg.replyInfo.senderName }}</text>
                 <text class="reply-preview">{{ getReplyPreview(msg.replyInfo) }}</text>
               </view>
+              <image
+                v-if="msg.replyInfo.type === 'IMAGE' && (msg.replyInfo.thumbnailUrl || msg.replyInfo.mediaUrl)"
+                class="reply-thumb"
+                :src="getMediaUrl(msg.replyInfo.thumbnailUrl || msg.replyInfo.mediaUrl)"
+                mode="aspectFill"
+              />
             </view>
 
-            <!-- 消息内容（可折叠） -->
+            <!-- 消息内容（可折叠）；纯表情消息放大渲染（微信式大表情） -->
             <view class="bubble-content" :class="{ 'bubble-collapsed': isCollapsed(msg._id) }">
-              <text v-if="msg.type === 'TEXT'" class="bubble-text"><template v-for="(seg, si) in mentionTextSegments(msg.content)" :key="si"><text v-if="seg.hit" class="bubble-mention">{{ seg.text }}</text><text v-else>{{ seg.text }}</text></template></text>
-              <!-- 图片消息：上传中本地预览 + 进度遮罩；加载失败可点击重试 -->
+              <text v-if="msg.type === 'TEXT'" class="bubble-text" :class="{ 'bubble-text-emoji': isEmojiOnly(msg.content) }"><template v-for="(seg, si) in mentionTextSegments(msg.content)" :key="si"><text v-if="seg.hit" class="bubble-mention">{{ seg.text }}</text><text v-else>{{ seg.text }}</text></template></text>
+              <!-- 图片消息：上传中本地预览 + 进度遮罩；加载失败可点击重试；加载完成补偿定位 -->
               <view v-else-if="msg.type === 'IMAGE'" class="bubble-image-wrap">
                 <image
                   v-if="!failedImageIds.has(msg._id)"
@@ -176,6 +213,7 @@
                   mode="widthFix"
                   @click="onImageBubbleClick(msg)"
                   @error="onImageError(msg)"
+                  @load="onImageLoaded"
                 />
                 <view v-else class="image-load-failed" @click="retryImage(msg)">
                   <uni-icons type="refresh" size="20" color="var(--color-icon-muted)" />
@@ -199,7 +237,7 @@
                   <text class="image-uploading-text">{{ msg.uploadProgress || 0 }}%</text>
                 </view>
               </view>
-              <!-- 语音消息：点击播放/暂停，宽度随时长 -->
+              <!-- 语音消息：点击播放/暂停，宽度随时长；未听过的语音带红点提示 -->
               <view
                 v-else-if="msg.type === 'VOICE'"
                 class="voice-bubble"
@@ -207,6 +245,7 @@
                 :style="{ width: voiceWidth(msg.duration) }"
                 @click.stop="togglePlayVoice(msg)"
               >
+                <view v-if="isVoiceUnread(msg)" class="voice-unread-dot"></view>
                 <uni-icons
                   :type="playingId === msg._id ? 'sound-filled' : 'sound'"
                   size="36rpx"
@@ -299,14 +338,15 @@
         </view>
       </view>
       <view id="msg-bottom" class="msg-bottom"></view>
-    </scroll-view>
+      </scroll-view>
 
-    <!-- 回到底部 / 新消息提示 -->
-    <transition name="pop" :duration="{ enter: 200, leave: 150 }">
-      <view v-if="!isAtBottom" class="scroll-bottom-btn" @click="scrollToBottomManual">
-        <text class="scroll-bottom-text">{{ newCount > 0 ? `↓ ${newCount} 条新消息` : '回到底部 ↓' }}</text>
-      </view>
-    </transition>
+      <!-- 回到底部 / 新消息提示（锚定消息区域底部，面板展开时自动位于其上） -->
+      <transition name="pop" :duration="{ enter: 200, leave: 150 }">
+        <view v-if="!isAtBottom" class="scroll-bottom-btn" @click="scrollToBottomManual">
+          <text class="scroll-bottom-text">{{ newCount > 0 ? `↓ ${newCount} 条新消息` : '回到底部 ↓' }}</text>
+        </view>
+      </transition>
+    </view>
 
     <!-- 长按上下文菜单 -->
     <transition name="menu" :duration="{ enter: 180, leave: 150 }">
@@ -333,7 +373,7 @@
       </view>
     </transition>
 
-    <!-- 转发弹窗：选择目标会话 -->
+    <!-- 转发弹窗：选择目标会话（支持按名称过滤） -->
     <BaseModal
       v-model:visible="showForwardModal"
       title="转发给"
@@ -342,9 +382,21 @@
       confirm-text="取消"
       @confirm="showForwardModal = false"
     >
+      <view class="forward-search">
+        <uni-icons type="search" size="18" color="var(--color-icon-muted)" />
+        <input
+          v-model="forwardKeyword"
+          class="forward-search-input"
+          placeholder="搜索会话"
+          placeholder-class="forward-search-placeholder"
+        />
+        <view v-if="forwardKeyword" class="forward-search-clear" @click="forwardKeyword = ''">
+          <uni-icons type="clear" size="16" color="var(--color-icon-muted)" />
+        </view>
+      </view>
       <scroll-view scroll-y class="forward-list">
         <view
-          v-for="c in forwardTargets"
+          v-for="c in filteredForwardTargets"
           :key="c._id"
           class="forward-item"
           @click="confirmForward(c)"
@@ -371,8 +423,8 @@
           <text class="forward-name">{{ c.type === 'GROUP' ? (c.name || '群聊') : ((c.otherUser && (c.otherUser.remark || c.otherUser.nickname || c.otherUser.username)) || '') }}</text>
           <uni-icons type="forward" size="20" color="var(--color-icon-muted)" />
         </view>
-        <view v-if="!forwardTargets.length" class="forward-empty">
-          <text class="forward-empty-text">暂无其他会话</text>
+        <view v-if="!filteredForwardTargets.length" class="forward-empty">
+          <text class="forward-empty-text">{{ forwardKeyword ? '没有匹配的会话' : '暂无其他会话' }}</text>
         </view>
       </scroll-view>
     </BaseModal>
@@ -427,7 +479,10 @@
             class="gi-member"
             @click="mentionFromModal(m)"
           >
-            <AppAvatar :src="getMediaUrl(m.avatar)" :text="getAvatarText(m)" :background="getAvatarGradient(m)" size="64rpx" radius="50%" font-size="24rpx" shadow="none" />
+            <view class="gi-member-avatar">
+              <AppAvatar :src="getMediaUrl(m.avatar)" :text="getAvatarText(m)" :background="getAvatarGradient(m)" size="64rpx" radius="50%" font-size="24rpx" shadow="none" />
+              <view v-if="m.online" class="gi-member-online"></view>
+            </view>
             <text class="gi-member-name">{{ m.nickname || m.username }}</text>
             <text v-if="m._id === groupInfo.owner" class="gi-owner-badge">群主</text>
           </view>
@@ -435,10 +490,10 @@
       </view>
       <template #footer>
         <view class="gi-actions">
-          <view v-if="groupInfo.owner === currentUserId" class="gi-btn gi-btn-danger" @click="disbandGroup">
+          <view v-if="groupInfo.owner === currentUserId" class="gi-btn gi-btn-danger" @click="confirmGroupAction('disband')">
             <text class="gi-btn-text gi-btn-text-danger">解散群聊</text>
           </view>
-          <view v-else class="gi-btn gi-btn-danger" @click="quitGroup">
+          <view v-else class="gi-btn gi-btn-danger" @click="confirmGroupAction('quit')">
             <text class="gi-btn-text gi-btn-text-danger">退出群聊</text>
           </view>
           <view class="gi-btn gi-btn-primary" @click="showGroupModal = false">
@@ -448,9 +503,20 @@
       </template>
     </BaseModal>
 
-    <!-- 回复引用栏 -->
+    <!-- 退群/解散群二次确认：不可逆操作且误触代价比删除消息高得多 -->
+    <BaseModal
+      v-model:visible="showGroupConfirmModal"
+      :title="groupActionType === 'disband' ? '解散群聊' : '退出群聊'"
+      :content="groupActionType === 'disband'
+        ? `解散后「${otherNickname || '该群'}」的所有群消息将被删除且不可恢复，确定解散吗？`
+        : '退出后将不再接收该群消息，确定退出吗？'"
+      confirm-text="确定"
+      @confirm="executeGroupAction"
+    />
+
+    <!-- 回复引用栏（点击引用内容可定位到被回复的消息） -->
     <view v-if="replyToMsg" class="reply-bar">
-      <view class="reply-bar-content">
+      <view class="reply-bar-content" @click="jumpReplyOrigin">
         <text class="reply-bar-name">{{ replyToMsg.sender.nickname || replyToMsg.sender.username }}</text>
         <text class="reply-bar-text">{{ getReplyPreview(replyToMsg) }}</text>
       </view>
@@ -484,8 +550,91 @@
     </view>
     </transition>
 
-    <!-- 功能面板（H5：mousedown.prevent 保持编辑器焦点与光标） -->
+    <!-- @提及成员选择面板（群聊输入 @ 时出现） -->
     <transition name="fade-up" :duration="{ enter: 220, leave: 220 }">
+      <view v-if="showMentionPicker && mentionCandidates.length" class="mention-picker">
+        <view class="mention-picker-title">
+          <text class="mention-picker-title-text">选择提醒的人</text>
+        </view>
+        <view
+          v-for="(m, idx) in mentionCandidates"
+          :key="m._id"
+          class="mention-item"
+          :class="{ 'mention-item--active': idx === mentionActiveIndex }"
+          @mousedown.prevent
+          @click="pickMention(m)"
+        >
+          <AppAvatar
+            :src="getMediaUrl(m.avatar)"
+            :background="getAvatarGradient(m)"
+            :text="getAvatarText(m)"
+            size="56rpx"
+            radius="50%"
+            font-size="22rpx"
+            shadow="none"
+          />
+          <text class="mention-item-name">{{ m.remark || m.nickname || m.username }}</text>
+          <text class="mention-item-username">@{{ m.username }}</text>
+        </view>
+      </view>
+    </transition>
+
+    <!-- 多选操作底栏（替换输入栏） -->
+    <view v-if="multiSelectMode" class="multiselect-bar">
+      <view class="ms-btn" @click="exitMultiSelect">
+        <text class="ms-btn-text">取消</text>
+      </view>
+      <text class="ms-count">已选 {{ selectedMsgIds.size }} 条</text>
+      <view class="ms-btn" @click="selectAllVisible">
+        <text class="ms-btn-text">全选</text>
+      </view>
+      <view class="ms-btn ms-btn-danger" @click="menuHideBatch">
+        <text class="ms-btn-text ms-btn-text-danger">删除</text>
+      </view>
+      <view class="ms-btn ms-btn-primary" :class="{ 'ms-btn--disabled': selectedMsgIds.size === 0 }" @click="forwardSelected">
+        <text class="ms-btn-text ms-btn-text-primary">转发</text>
+      </view>
+    </view>
+
+    <!-- 输入栏（面板展开时安全区改由面板承接，避免双份底部间距） -->
+    <view v-else class="input-bar" :class="{ 'input-bar--panel-open': showEmojiPanel || showActionPanel }">
+      <view
+        class="action-btn"
+        :class="{ 'action-btn--active': showEmojiPanel }"
+        aria-label="表情"
+        @click="toggleEmojiPanel"
+      >
+        <text class="emoji-btn">😊</text>
+      </view>
+      <!-- 点击输入区切回键盘模式：收起全部面板（避免软键盘与面板叠加挤占视野） -->
+      <view class="input-wrapper" @click="closePanels">
+        <view
+          ref="editorRef"
+          class="msg-editor"
+          data-placeholder="输入消息…"
+          @input="onEditorInput"
+        ></view>
+      </view>
+      <!-- 有内容：发送按钮；无内容：功能面板入口（交叉过渡变形） -->
+      <transition name="fade-swap" mode="out-in" :duration="{ enter: 150, leave: 150 }">
+        <view
+          v-if="hasEditorContent"
+          key="send"
+          class="send-btn send-btn-active"
+          aria-label="发送"
+          @click="sendMessage"
+        >
+          <text class="send-text">发送</text>
+        </view>
+        <view v-else key="plus" class="action-btn action-btn-plus" :class="{ 'action-btn--active': showActionPanel }" aria-label="更多功能" @click="toggleActionPanel">
+          <uni-icons type="plus-filled" size="50rpx" color="#FF6B6B" />
+        </view>
+      </transition>
+    </view>
+
+    <!-- 功能面板（微信式：位于输入栏下方；H5：mousedown.prevent 保持编辑器焦点与光标；
+         panelSwapping 时跳过动画，与表情面板瞬时互换不产生空档） -->
+    <transition :name="panelSwapping ? 'panel-none' : 'fade-up'" :duration="{ enter: 220, leave: 220 }">
       <view v-if="showActionPanel" class="action-panel" @mousedown.prevent>
       <view class="action-panel-item" @click="pickFromAlbum">
         <view class="action-panel-icon"><uni-icons type="image" size="44rpx" color="#FF6B6B" /></view>
@@ -516,37 +665,8 @@
     </view>
     </transition>
 
-    <!-- @提及成员选择面板（群聊输入 @ 时出现） -->
-    <transition name="fade-up" :duration="{ enter: 220, leave: 220 }">
-      <view v-if="showMentionPicker && mentionCandidates.length" class="mention-picker">
-        <view class="mention-picker-title">
-          <text class="mention-picker-title-text">选择提醒的人</text>
-        </view>
-        <view
-          v-for="(m, idx) in mentionCandidates"
-          :key="m._id"
-          class="mention-item"
-          :class="{ 'mention-item--active': idx === mentionActiveIndex }"
-          @mousedown.prevent
-          @click="pickMention(m)"
-        >
-          <AppAvatar
-            :src="getMediaUrl(m.avatar)"
-            :background="getAvatarGradient(m)"
-            :text="getAvatarText(m)"
-            size="56rpx"
-            radius="50%"
-            font-size="22rpx"
-            shadow="none"
-          />
-          <text class="mention-item-name">{{ m.remark || m.nickname || m.username }}</text>
-          <text class="mention-item-username">@{{ m.username }}</text>
-        </view>
-      </view>
-    </transition>
-
-    <!-- 表情面板（H5：mousedown.prevent 保持编辑器焦点与光标） -->
-    <transition name="fade-up" :duration="{ enter: 220, leave: 220 }">
+    <!-- 表情面板（微信式：位于输入栏下方；H5：mousedown.prevent 保持编辑器焦点与光标） -->
+    <transition :name="panelSwapping ? 'panel-none' : 'fade-up'" :duration="{ enter: 220, leave: 220 }">
       <view v-if="showEmojiPanel" class="emoji-panel" @mousedown.prevent>
         <template v-if="recentEmojis.length">
           <view class="emoji-section">
@@ -561,77 +681,33 @@
               >{{ e }}</text>
             </view>
           </view>
-          <view class="emoji-section">
-            <text class="emoji-section-label">全部表情</text>
-            <view class="emoji-grid">
-              <text
-                v-for="(e, i) in EMOJI_LIST"
-                :key="'all-' + i"
-                class="emoji-item"
-                @mousedown.prevent
-                @click="insertEmoji(e)"
-              >{{ e }}</text>
-            </view>
+        </template>
+        <view class="emoji-section">
+          <text class="emoji-section-label">笑脸与情感</text>
+          <view class="emoji-grid">
+            <text
+              v-for="(e, i) in EMOJI_FACE"
+              :key="'face-' + i"
+              class="emoji-item"
+              @mousedown.prevent
+              @click="insertEmoji(e)"
+            >{{ e }}</text>
           </view>
-        </template>
-        <template v-else>
-          <text
-            v-for="(e, i) in EMOJI_LIST"
-            :key="i"
-            class="emoji-item"
-            @mousedown.prevent
-            @click="insertEmoji(e)"
-          >{{ e }}</text>
-        </template>
+        </view>
+        <view class="emoji-section">
+          <text class="emoji-section-label">手势与符号</text>
+          <view class="emoji-grid">
+            <text
+              v-for="(e, i) in EMOJI_GESTURE"
+              :key="'gesture-' + i"
+              class="emoji-item"
+              @mousedown.prevent
+              @click="insertEmoji(e)"
+            >{{ e }}</text>
+          </view>
+        </view>
       </view>
     </transition>
-
-    <!-- 多选操作底栏（替换输入栏） -->
-    <view v-if="multiSelectMode" class="multiselect-bar">
-      <view class="ms-btn" @click="exitMultiSelect">
-        <text class="ms-btn-text">取消</text>
-      </view>
-      <text class="ms-count">已选 {{ selectedMsgIds.size }} 条</text>
-      <view class="ms-btn" @click="selectAllVisible">
-        <text class="ms-btn-text">全选</text>
-      </view>
-      <view class="ms-btn ms-btn-danger" @click="menuHideBatch">
-        <text class="ms-btn-text ms-btn-text-danger">删除</text>
-      </view>
-      <view class="ms-btn ms-btn-primary" :class="{ 'ms-btn--disabled': selectedMsgIds.size === 0 }" @click="forwardSelected">
-        <text class="ms-btn-text ms-btn-text-primary">转发</text>
-      </view>
-    </view>
-
-    <!-- 输入栏 -->
-    <view v-else class="input-bar">
-      <view class="action-btn" aria-label="表情" @click="toggleEmojiPanel">
-        <text class="emoji-btn">😊</text>
-      </view>
-      <view class="input-wrapper" @click="showActionPanel = false">
-        <view
-          ref="editorRef"
-          class="msg-editor"
-          data-placeholder="输入消息…"
-          @input="onEditorInput"
-        ></view>
-      </view>
-      <!-- 有内容：发送按钮；无内容：功能面板入口（交叉过渡变形） -->
-      <transition name="fade-swap" mode="out-in" :duration="{ enter: 150, leave: 150 }">
-        <view
-          v-if="hasEditorContent"
-          key="send"
-          class="send-btn send-btn-active"
-          aria-label="发送"
-          @click="sendMessage"
-        >
-          <text class="send-text">发送</text>
-        </view>
-        <view v-else key="plus" class="action-btn action-btn-plus" aria-label="更多功能" @click="toggleActionPanel">
-          <uni-icons type="plus-filled" size="50rpx" color="#FF6B6B" />
-        </view>
-      </transition>
-    </view>
   </view>
 
   <!-- 全局通话覆盖层 -->
@@ -644,7 +720,7 @@ import { useChatStore } from '@/store/chat';
 import { useUserStore } from '@/store/user';
 import { upload, get, put, del, post } from '@/utils/request';
 import wsClient from '@/utils/socket';
-import { getMediaUrl, getAvatarGradient, getAvatarText, formatMessageTime } from '@/utils/format';
+import { getMediaUrl, getAvatarGradient, getAvatarText, formatMessageTime, formatListTime } from '@/utils/format';
 import AppAvatar from '@/components/AppAvatar/AppAvatar.vue';
 import CallOverlay from '@/components/CallOverlay/CallOverlay.vue';
 import { useCallStore } from '@/store/call';
@@ -763,6 +839,17 @@ const mentionTextSegments = (content) => {
   return segs.length ? segs : [{ hit: false, text: content }];
 };
 
+// 纯表情消息识别（微信式放大渲染）：内容仅由表情与空白组成且不超过 12 个表情
+// （ZWJ 组合表情按成员计数，如一家四口算 4）。否则一个个 30rpx 的小表情挤在
+// 小气泡里，观感极差（用户实测反馈）
+const EMOJI_ONLY_RE = /^[\s\p{Extended_Pictographic}\uFE0F\u200D]+$/u;
+const isEmojiOnly = (content) => {
+  const text = (content || '').trim();
+  if (!text || !EMOJI_ONLY_RE.test(text)) return false;
+  const count = (text.match(/\p{Extended_Pictographic}/gu) || []).length;
+  return count > 0 && count <= 12;
+};
+
 // 对方正在输入提示（本地响应式，由全局总线驱动）
 const peerTyping = ref(false);
 let peerTypingTimer = null;
@@ -779,6 +866,18 @@ const onPeerTypingEvent = (payload) => {
 const showForwardModal = ref(false);
 const forwardMsg = ref(null);
 const forwardTargets = computed(() => chatStore.getConversations.filter(c => c._id !== conversationId.value));
+// 转发目标搜索：会话多时快速定位（群名/私聊备注昵称，不区分大小写）
+const forwardKeyword = ref('');
+const filteredForwardTargets = computed(() => {
+  const kw = forwardKeyword.value.trim().toLowerCase();
+  if (!kw) return forwardTargets.value;
+  return forwardTargets.value.filter(c => {
+    const name = c.type === 'GROUP'
+      ? (c.name || '')
+      : ((c.otherUser && (c.otherUser.remark || c.otherUser.nickname || c.otherUser.username)) || '');
+    return name.toLowerCase().includes(kw);
+  });
+});
 
 // ========== 多选消息与批量转发 ==========
 const multiSelectMode = ref(false);
@@ -822,6 +921,7 @@ const forwardSelected = () => {
   if (selectedMsgIds.value.size === 0) return;
   forwardMsg.value = null; // 多选模式标记：确认转发时走批量分支
   ensureForwardTargets();
+  forwardKeyword.value = '';
   showForwardModal.value = true;
 };
 
@@ -940,10 +1040,13 @@ const firstUnreadId = ref('');
 
 // 对方在线状态（私聊顶栏展示；初始取会话列表缓存，实时由 ONLINE_STATUS 驱动）
 const otherOnline = ref(false);
+// 对方最后在线时间：进入会话时取列表缓存快照，收到下线事件时以当下时间校正
+const otherLastSeen = ref('');
 
 const onOnlineStatus = (data) => {
   if (data && data.userId === otherUserId.value) {
     otherOnline.value = !!data.online;
+    if (!data.online) otherLastSeen.value = Date.now();
   }
 };
 
@@ -1077,12 +1180,37 @@ const doSearch = async () => {
     const res = await get(`/api/messages/${conversationId.value}/search`, { keyword: kw, limit: 30 });
     if (res.code === 200) {
       searchResults.value = res.data.messages;
+      trackSearchHistory(kw);
     }
   } catch (e) {
     console.error('消息搜索失败:', e);
   } finally {
     searching.value = false;
   }
+};
+
+// ========== 最近搜索历史（全局共享，最多 5 条，本地持久化） ==========
+const SEARCH_HISTORY_KEY = 'msgSearchHistory';
+const searchHistory = ref([]);
+try {
+  searchHistory.value = JSON.parse(uni.getStorageSync(SEARCH_HISTORY_KEY) || '[]');
+} catch (e) { searchHistory.value = []; }
+
+const trackSearchHistory = (kw) => {
+  const next = [kw, ...searchHistory.value.filter(h => h !== kw)].slice(0, 5);
+  searchHistory.value = next;
+  uni.setStorageSync(SEARCH_HISTORY_KEY, JSON.stringify(next));
+};
+
+const clearSearchHistory = () => {
+  searchHistory.value = [];
+  uni.removeStorageSync(SEARCH_HISTORY_KEY);
+};
+
+// 点击历史词：填入并立即搜索
+const useHistoryKeyword = (kw) => {
+  searchKeyword.value = kw;
+  doSearch();
 };
 
 // 点击结果：关闭面板并定位；消息未加载时 scrollToMessage 内部会自动翻页查找
@@ -1100,14 +1228,31 @@ const closePanels = () => {
   showActionPanel.value = false;
 };
 
+// 表情面板 / 功能面板：二者互斥。直接互换时跳过进出场动画——
+// 两个文档流面板先后播放 leave/enter 会造成布局"先塌再撑"的空档（用户实测反馈）
+const panelSwapping = ref(false);
+let panelSwapTimer = null;
+
 const toggleEmojiPanel = () => {
+  if (showActionPanel.value) panelSwapping.value = true;
   showActionPanel.value = false;
   showEmojiPanel.value = !showEmojiPanel.value;
+  clearTimeout(panelSwapTimer);
+  panelSwapTimer = setTimeout(() => { panelSwapping.value = false; }, 60);
 };
 
 const toggleActionPanel = () => {
+  if (showEmojiPanel.value) panelSwapping.value = true;
   showEmojiPanel.value = false;
   showActionPanel.value = !showActionPanel.value;
+  clearTimeout(panelSwapTimer);
+  panelSwapTimer = setTimeout(() => { panelSwapping.value = false; }, 60);
+};
+
+// 点击聊天区域（消息列表空白处）：收起表情/功能面板与@面板（微信式切回浏览态）
+const onMessageAreaClick = () => {
+  if (showEmojiPanel.value || showActionPanel.value) closePanels();
+  if (showMentionPicker.value) showMentionPicker.value = false;
 };
 const EMOJI_LIST = [
   '😀', '😄', '😁', '😅', '😂', '🤣', '😊', '😍', '😘', '😜', '🤔', '🤗',
@@ -1115,8 +1260,11 @@ const EMOJI_LIST = [
   '👻', '🙏', '👍', '👎', '👏', '💪', '🤝', '✌️', '🤟', '🤙', '👀', '💥',
   '✨', '🔥', '🎉', '🎂', '🎁', '❤️', '💔', '🌹', '🍺', '☕', '🍉', '⚡'
 ];
+// 面板分节展示（与微信"笑脸/其他"分页近似）：前 24 个为脸部表情，其余为手势与符号
+const EMOJI_FACE = EMOJI_LIST.slice(0, 24);
+const EMOJI_GESTURE = EMOJI_LIST.slice(24);
 
-// 最近使用的表情：面板顶部优先展示（本地持久化，最多 8 个）
+// 最近使用的表情：面板顶部优先展示（本地持久化，最多 16 个，覆盖两行更实用）
 const RECENT_EMOJI_KEY = 'emojiRecent';
 const recentEmojis = ref([]);
 try {
@@ -1124,7 +1272,7 @@ try {
 } catch (e) { recentEmojis.value = []; }
 
 const trackRecentEmoji = (emoji) => {
-  const next = [emoji, ...recentEmojis.value.filter(e => e !== emoji)].slice(0, 8);
+  const next = [emoji, ...recentEmojis.value.filter(e => e !== emoji)].slice(0, 16);
   recentEmojis.value = next;
   uni.setStorageSync(RECENT_EMOJI_KEY, JSON.stringify(next));
 };
@@ -1159,6 +1307,14 @@ const restoreDraft = () => {
   // #endif
 };
 
+// 输入停顿 800ms 后草稿落盘：原本只在离开页面时保存，浏览器崩溃/误关标签页会丢草稿；
+// 离开时的立即保存（onBeforeUnmount）仍然保留，二者幂等不冲突
+let draftSaveTimer = null;
+const scheduleDraftSave = () => {
+  clearTimeout(draftSaveTimer);
+  draftSaveTimer = setTimeout(() => saveDraft(), 800);
+};
+
 // 菜单定位样式
 const menuStyle = computed(() => ({
   left: contextMenuPos.value.x + 'px',
@@ -1185,9 +1341,22 @@ const previewImage = (url) => {
   // #endif
 };
 
-// 群聊点击他人头像：向输入框插入 @昵称（快捷提及）
+// 点击消息头像：群聊他人消息快捷 @提及；私聊查看对方头像大图（微信式）
 const onAvatarClick = (msg) => {
-  if (!isGroup.value || msg.recalled || msg.sender._id === currentUserId.value) return;
+  if (msg.recalled) return;
+  const isSelf = msg.sender._id === currentUserId.value;
+  if (!isGroup.value) {
+    // #ifdef H5
+    const url = isSelf
+      ? (userStore.getUserInfo?.avatar || msg.sender.avatar)
+      : msg.sender.avatar;
+    if (url) {
+      uni.previewImage({ urls: [getMediaUrl(url)] });
+    }
+    // #endif
+    return;
+  }
+  if (isSelf) return;
   // #ifdef H5
   const el = getEditorEl();
   if (!el) return;
@@ -1212,6 +1381,16 @@ const pauseVoiceForVideo = () => {
   playingId.value = '';
   voiceRemaining.value = 0;
   voiceTotal.value = 0;
+};
+
+// 图片消息加载完成：列表高度随之变化，若正处于首次定位窗口则补偿重定位
+const onImageLoaded = () => {
+  // #ifdef H5
+  if (pendingLocateMsgId) {
+    const el = document.getElementById('msg-' + pendingLocateMsgId);
+    if (el) el.scrollIntoView({ behavior: 'auto', block: 'center' });
+  }
+  // #endif
 };
 
 // 图片气泡点击：上传中忽略，完成后进入相册预览
@@ -1305,10 +1484,21 @@ const openMenuAt = (msg, rect, mode = 'full') => {
 
 const onLongPress = (e, msg) => {
   // #ifdef H5
+  // 触觉反馈（支持的移动端浏览器生效，桌面/不支持时静默）
+  if (navigator.vibrate) {
+    try { navigator.vibrate(15); } catch (err) { /* ignore */ }
+  }
   const touch = e.touches?.[0] || e.changedTouches?.[0];
   const x = touch?.clientX || e.detail?.x || 0;
   const y = touch?.clientY || e.detail?.y || 0;
   openMenuAt(msg, { left: x - 40, top: y - 20, width: 80, height: 40 }, 'full');
+  // #endif
+};
+
+// 桌面右键消息：与长按同菜单（桌面端没有长按手势，右键是标准快捷菜单入口）
+const onBubbleContextMenu = (e, msg) => {
+  // #ifdef H5
+  openMenuAt(msg, { left: e.clientX - 40, top: e.clientY - 15, width: 80, height: 30 }, 'full');
   // #endif
 };
 
@@ -1395,6 +1585,13 @@ const cancelReply = () => {
   replyToMsg.value = null;
 };
 
+// 点击回复栏引用内容：定位到被回复的原消息（与气泡内引用块行为一致）
+const jumpReplyOrigin = () => {
+  if (replyToMsg.value && replyToMsg.value._id) {
+    scrollToMessage(replyToMsg.value._id);
+  }
+};
+
 // 是否可以编辑撤回的消息（自己发送 + 已撤回 + 撤回后5分钟内 + TEXT或RICH类型）
 const canEditRecalled = (msg) => {
   if (!msg || !msg.recalled || msg.sender._id !== currentUserId.value) return false;
@@ -1457,6 +1654,10 @@ const onMessageRecalled = (data) => {
 const scrollToMessage = async (msgId) => {
   if (!msgId) return;
   // #ifdef H5
+  // 标记待定位消息：3 秒内图片等异步资源加载完成后补偿定位（高度变化会冲掉滚动位置）
+  pendingLocateMsgId = msgId;
+  clearTimeout(pendingLocateTimer);
+  pendingLocateTimer = setTimeout(() => { pendingLocateMsgId = ''; }, 3000);
   // 消息已在列表中，直接滚动
   if (messages.value.find(m => m._id === msgId)) {
     doScrollToMessageDom(msgId);
@@ -1499,11 +1700,17 @@ const scrollToMessage = async (msgId) => {
 
 // H5端 DOM 滚动 + 高亮（高亮在滚动停止后执行）
 let scrollEndTimer = null;
+// 首次定位未读/定位消息期间，图片等异步资源加载会改变列表高度，
+// smooth 动画目标会被浏览器钳制漂移（实测：定位未读被拉到底部）。
+// 用瞬时滚动 + 图片加载补偿定位（onImageLoaded）双保险
+let pendingLocateMsgId = '';
+let pendingLocateTimer = null;
+
 const doScrollToMessageDom = (msgId, delay = 0) => {
   const fn = () => {
     const el = document.getElementById('msg-' + msgId);
     if (!el) return;
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.scrollIntoView({ behavior: 'auto', block: 'center' });
     // 监听滚动容器，滚动停止后再高亮
     const container = document.querySelector('.message-list .uni-scroll-view') || document.querySelector('.message-list');
     if (!container) return;
@@ -1548,8 +1755,9 @@ const getReplyPreview = (replyInfo) => {
   return replyInfo.content || '';
 };
 
-// 获取撤回提示文本
+// 获取撤回提示文本：自己的消息以"你"指代（微信文案），他人的用昵称
 const getRecallText = (msg) => {
+  if (msg.sender._id === currentUserId.value) return '你撤回了一条消息';
   const name = msg.sender.nickname || msg.sender.username || '用户';
   return name + '撤回了一条消息';
 };
@@ -1611,6 +1819,21 @@ const isCollapsible = (id) => collapsibleMsgs.value.has(id);
 // 是否已折叠
 const isCollapsed = (id) => collapsedMsgs.value.has(id);
 
+// 移动端软键盘适配：iOS Safari 键盘弹出时 100vh 不收缩，输入栏会被键盘顶出视口。
+// 用 visualViewport 实际高度驱动页面高度 CSS 变量（桌面端该值恒等于视口高，无副作用）
+const setupViewportHeight = () => {
+  // #ifdef H5
+  if (!window.visualViewport) return;
+  const apply = () => {
+    document.documentElement.style.setProperty('--app-vh', window.visualViewport.height + 'px');
+  };
+  apply();
+  window.visualViewport.addEventListener('resize', apply);
+  // 键盘收起/页面隐藏后回到前台时校正一次（部分浏览器 resize 不触发）
+  window.visualViewport.addEventListener('scroll', apply);
+  // #endif
+};
+
 onMounted(async () => {
   // 深链刷新/通知直达会话时列表页可能未挂载，store 会话列表为空——
   // 反应者名字、转发目标、跳转等都依赖它，这里确保已加载（SWR 静默）
@@ -1650,6 +1873,7 @@ onMounted(async () => {
   // 对方在线状态初始值：取会话列表缓存（随后由 ONLINE_STATUS 实时校正）
   const cachedConv = chatStore.getConversations.find(c => c._id === conversationId.value);
   otherOnline.value = !!(cachedConv && cachedConv.otherUser && cachedConv.otherUser.online);
+  otherLastSeen.value = (cachedConv && cachedConv.otherUser && cachedConv.otherUser.lastSeen) || '';
 
   uni.setNavigationBarTitle({ title: otherNickname.value });
 
@@ -1675,6 +1899,8 @@ onMounted(async () => {
   } else {
     await loadMessages(true);
   }
+  // 首屏结束（含失败）：撤下加载态，交给空态/失败态/消息列表渲染
+  initialLoading.value = false;
   await chatStore.markConversationAsRead(conversationId.value);
   // WS 批量已读：不带 messageId，服务端将该会话发给自己的全部未读消息置为已读，
   // 并向对方广播 MESSAGE_READ(readAll)，供其把"送达"翻转为"已读"
@@ -1707,11 +1933,14 @@ onMounted(async () => {
       el.dataset.placeholder = '输入消息…';
       el.addEventListener('paste', handleEditorPaste);
       el.addEventListener('keydown', handleEditorKeyDown);
+      // 软键盘弹出（编辑器聚焦）后保持贴底，最新消息不被键盘遮住
+      el.addEventListener('focus', onEditorFocusScroll);
     }
     document.addEventListener('keydown', onDocKeyDown);
     // 恢复上次离开时未发送的草稿
     restoreDraft();
   });
+  setupViewportHeight();
   // #endif
 
   // #ifdef H5
@@ -1743,6 +1972,10 @@ onUnmounted(() => {
   // 清理所有待确认的 ACK 超时，防止卸载后回调操作已销毁的状态
   pendingTimers.forEach(t => clearTimeout(t));
   pendingTimers.clear();
+  clearTimeout(draftSaveTimer);
+  clearTimeout(panelSwapTimer);
+  clearTimeout(pendingLocateTimer);
+  pendingLocateMsgId = '';
   // 缓存本会话消息记录（含分页游标），下次进入可秒开、无需重新请求
   chatStore.leaveConversation(conversationId.value, {
     messages: messages.value,
@@ -1754,6 +1987,7 @@ onUnmounted(() => {
   if (el) {
     el.removeEventListener('paste', handleEditorPaste);
     el.removeEventListener('keydown', handleEditorKeyDown);
+    el.removeEventListener('focus', onEditorFocusScroll);
     // 清理编辑器内未发送的图片 object URL
     el.querySelectorAll('img.editor-img').forEach(img => {
       if (img.dataset.url) URL.revokeObjectURL(img.dataset.url);
@@ -1961,11 +2195,14 @@ const revalidateMessages = async () => {
   }
 };
 
-// 分页加载守卫：scrolltoupper 可能连续触发，加载中直接忽略，避免并发跳页
+// 分页加载守卫：scrolltoupper 可能连续触发，加载中直接忽略，避免并发跳页；
+// historyLoading 为响应式副本，驱动列表顶部"加载中"spinner（模块级布尔无法驱动模板）
 let loadingMore = false;
+const historyLoading = ref(false);
 const loadMoreMessages = async () => {
   if (!hasMore.value || loadingMore) return;
   loadingMore = true;
+  historyLoading.value = true;
   const targetPage = page.value + 1;
   try {
     page.value = targetPage;
@@ -1980,6 +2217,7 @@ const loadMoreMessages = async () => {
     checkMessageHeights();
   } finally {
     loadingMore = false;
+    historyLoading.value = false;
   }
 };
 
@@ -1988,12 +2226,24 @@ const loadMoreMessages = async () => {
 const pendingTimers = new Map();
 const genClientId = () => 'c-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
 
-// 启动 ACK 超时：10s 内未收到 MESSAGE_SENT 确认则标记为失败
+// 启动 ACK 超时：10s 内未收到 MESSAGE_SENT 确认则标记为失败；
+// 失败后自动静默重试一次（clientId 幂等，服务端不会重复入库），仍失败保留红点交人工处理
 const startAck = (clientId) => {
   const t = setTimeout(() => {
     const m = messages.value.find(x => x.clientId === clientId);
-    if (m && m.status === 'sending') m.status = 'failed';
     pendingTimers.delete(clientId);
+    if (m && m.status === 'sending') {
+      m.status = 'failed';
+      if (!m.autoRetried) {
+        m.autoRetried = true;
+        setTimeout(() => {
+          // 仅当消息仍在列表且处于失败态才重试：期间若已被 MESSAGE_SENT 确认替换，
+          // 闭包持有的旧对象虽仍是 failed，但已不在列表，跳过避免无谓重发
+          const stillFailed = messages.value.some(x => x.clientId === clientId && x.status === 'failed');
+          if (stillFailed) resendMessage(m);
+        }, 3000);
+      }
+    }
   }, 10000);
   pendingTimers.set(clientId, t);
 };
@@ -2152,11 +2402,18 @@ const getEditorEl = () => {
   return null;
 };
 
+// 编辑器聚焦（软键盘弹出）：稍等键盘/视口高度应用后滚到底部，保证最新消息可见
+const onEditorFocusScroll = () => {
+  // #ifdef H5
+  setTimeout(() => scrollToBottom(), 300);
+  // #endif
+};
+
 // 编辑器内容变化时更新发送按钮状态；开始输入即收起功能面板（不影响表情面板）
 const onEditorInput = () => {
   const el = getEditorEl();
   if (!el) return;
-  hasEditorContent.value = el.textContent.trim() !== '' || el.querySelector('img');
+  hasEditorContent.value = el.textContent.trim() !== '' || !!el.querySelector('img');
   if (showActionPanel.value) showActionPanel.value = false;
   updateMentionPicker();
 
@@ -2168,6 +2425,9 @@ const onEditorInput = () => {
       lastTypingSentAt = now;
     }
   }
+
+  // 草稿防丢：输入停顿后自动落盘
+  scheduleDraftSave();
 };
 
 // ========== 表情面板 ==========
@@ -2280,6 +2540,7 @@ const doForward = (msg) => {
   contextMenuMsg.value = null;
   forwardMsg.value = msg;
   ensureForwardTargets();
+  forwardKeyword.value = '';
   showForwardModal.value = true;
 };
 
@@ -2397,6 +2658,21 @@ const saveGroupName = async () => {
   }
 };
 
+// 退群/解散群：先二次确认再执行（原实现点击即执行，误触代价高）
+const showGroupConfirmModal = ref(false);
+const groupActionType = ref('quit');
+
+const confirmGroupAction = (type) => {
+  groupActionType.value = type;
+  showGroupConfirmModal.value = true;
+};
+
+const executeGroupAction = () => {
+  showGroupConfirmModal.value = false;
+  if (groupActionType.value === 'disband') disbandGroup();
+  else quitGroup();
+};
+
 const disbandGroup = async () => {
   showGroupModal.value = false;
   try {
@@ -2500,6 +2776,29 @@ const voiceProgress = computed(() => {
   return Math.min(100, Math.round((1 - voiceRemaining.value / voiceTotal.value) * 100));
 });
 
+// 语音消息未读红点：本地记录已播放的消息 ID（仅自己视角），上限 200 条防存储膨胀
+const VOICE_PLAYED_KEY = 'voicePlayedIds';
+const voicePlayedIds = ref(new Set());
+try {
+  voicePlayedIds.value = new Set(JSON.parse(uni.getStorageSync(VOICE_PLAYED_KEY) || '[]'));
+} catch (e) { voicePlayedIds.value = new Set(); }
+
+const isVoiceUnread = (msg) => {
+  return msg.sender._id !== currentUserId.value && !voicePlayedIds.value.has(msg._id);
+};
+
+const markVoicePlayed = (msgId) => {
+  if (!msgId || String(msgId).startsWith('temp-')) return;
+  const next = new Set(voicePlayedIds.value);
+  next.add(msgId);
+  // 超出上限按插入序淘汰最旧项（Set 迭代即插入序）
+  while (next.size > 200) {
+    next.delete(next.values().next().value);
+  }
+  voicePlayedIds.value = next;
+  uni.setStorageSync(VOICE_PLAYED_KEY, JSON.stringify([...next]));
+};
+
 // 播放/暂停语音（同时只播放一条）
 const togglePlayVoice = (msg) => {
   // #ifdef H5
@@ -2540,7 +2839,9 @@ const togglePlayVoice = (msg) => {
     uni.showToast({ title: '播放失败', icon: 'none' });
   };
   currentAudio = audio;
-  audio.play().catch(() => {
+  audio.play().then(() => {
+    markVoicePlayed(msg._id);
+  }).catch(() => {
     playingId.value = '';
     voiceRemaining.value = 0;
     voiceTotal.value = 0;
@@ -2786,7 +3087,8 @@ const sendMessage = async () => {
     uni.showToast({ title: '消息内容过长（最多 10000 字）', icon: 'none' });
     return;
   }
-  closePanels();
+  // 只收起功能面板，表情面板保持打开（微信式：连发表情不被打断）
+  showActionPanel.value = false;
 
   // 构建回复引用快照（在清空编辑器前）
   const replyInfo = replyToMsg.value ? buildReplyInfo(replyToMsg.value) : null;
@@ -2930,6 +3232,27 @@ const showTimeDivider = (index) => {
   return curr - prev > 300000;
 };
 
+// 群聊发送者昵称显示规则（微信式聚合）：与上一条同发送者、间隔在时间分隔阈值内
+// （5 分钟，即中间无时间徽章）且上一条未被撤回时，昵称只在首条显示，减少视觉噪音
+const showSenderName = (index) => {
+  if (index === 0) return true;
+  const prev = messages.value[index - 1];
+  if (!prev || prev.recalled) return true;
+  if (prev.sender._id !== messages.value[index].sender._id) return true;
+  return showTimeDivider(index);
+};
+
+// 连续消息（同发送者、无时间分隔、双方均未撤回）：收紧与上条的间距，
+// 形成"消息组"节奏（微信式），不同发送者/跨时间段恢复正常间距
+const isContinuation = (index) => {
+  if (index === 0) return false;
+  const prev = messages.value[index - 1];
+  const curr = messages.value[index];
+  if (!prev || !curr || prev.recalled || curr.recalled) return false;
+  if (prev.sender._id !== curr.sender._id) return false;
+  return !showTimeDivider(index);
+};
+
 // 完整日期时间（时间徽章悬浮提示用）
 const fullTime = (time) => {
   if (!time) return '';
@@ -2941,9 +3264,14 @@ const fullTime = (time) => {
 // 消息加载失败标记（首屏）：展示重试入口
 const msgLoadFailed = ref(false);
 
+// 首屏消息加载中：与空会话引导互斥，避免"打个招呼吧"在加载期间误闪
+const initialLoading = ref(true);
+
 const retryLoad = () => {
   msgLoadFailed.value = false;
-  loadMessages(true);
+  // 重试期间重新进入首屏加载态，失败兜底与初始路径一致
+  initialLoading.value = true;
+  loadMessages(true).finally(() => { initialLoading.value = false; });
 };
 
 // 快捷打招呼（空会话引导）
@@ -2959,11 +3287,23 @@ const quickSend = (text) => {
   sendMessage();
 };
 
+// H5 强制贴底：scroll-into-view 只保证锚点"最少可见"（可能仍差几十像素），
+// 表情/图片等内容加载后高度变化也会让底部留缺口——这里直接把真实滚动容器拉到最底
+const forceScrollToBottom = () => {
+  // #ifdef H5
+  const scroller = Array.from(document.querySelectorAll('.message-list, .message-list *'))
+    .find(e => e.scrollHeight > e.clientHeight + 10);
+  if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  // #endif
+};
+
 const scrollToBottom = () => {
   nextTick(() => {
     scrollToView.value = '';
     setTimeout(() => {
       scrollToView.value = 'msg-bottom';
+      // 滚动完成后再校验一次，兜底最小滚动量与内容迟滞加载导致的半截遮挡
+      setTimeout(() => forceScrollToBottom(), 150);
     }, 100);
   });
 };
@@ -2974,7 +3314,13 @@ const scrollToBottom = () => {
   position: relative;
   display: flex;
   flex-direction: column;
+  /* 高度三级回退：
+     1) 100vh 老浏览器兜底（移动端会大于可视高度，底部可能被地址栏裁掉）
+     2) 100dvh 动态视口（随移动端浏览器 UI 收缩，根治地址栏遮挡）
+     3) --app-vh 由 visualViewport 实时同步（软键盘精确适配，见 setupViewportHeight） */
   height: 100vh;
+  height: 100dvh;
+  height: var(--app-vh, 100dvh);
 }
 
 /* 顶部导航栏（桌面宽屏下随容器收窄居中） */
@@ -3050,6 +3396,41 @@ const scrollToBottom = () => {
 /* 在线状态副标题：绿色点缀 */
 .nav-subtitle-online {
   color: var(--color-success);
+}
+
+/* 正在输入副标题：文字 + 三点跳动动画 */
+.nav-subtitle-typing {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.nav-subtitle-typing-text {
+  font-size: 22rpx;
+  color: var(--color-success);
+}
+
+.typing-dots {
+  display: flex;
+  align-items: flex-end;
+  gap: 6rpx;
+  height: 24rpx;
+}
+
+.typing-dot {
+  width: 8rpx;
+  height: 8rpx;
+  border-radius: 50%;
+  background: var(--color-success);
+  animation: typingBounce 1.2s ease-in-out infinite;
+}
+
+.typing-dot:nth-child(2) { animation-delay: 0.18s; }
+.typing-dot:nth-child(3) { animation-delay: 0.36s; }
+
+@keyframes typingBounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-10rpx); opacity: 1; }
 }
 
 /* 群聊他人消息的发送者昵称 */
@@ -3134,6 +3515,50 @@ const scrollToBottom = () => {
   font-size: 24rpx;
   font-weight: 600;
   color: #FFFFFF;
+}
+
+/* ========== 最近搜索历史 ========== */
+.search-history {
+  padding: 0 24rpx 16rpx;
+  flex-shrink: 0;
+}
+
+.search-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12rpx;
+}
+
+.search-history-title {
+  font-size: 22rpx;
+  color: var(--color-text-tertiary);
+}
+
+.search-history-clear {
+  padding: 6rpx;
+}
+
+.search-history-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx;
+}
+
+.search-history-chip {
+  padding: 8rpx 24rpx;
+  background: var(--color-input-bg);
+  border-radius: 999rpx;
+}
+
+.search-history-chip:active {
+  transform: scale(0.95);
+  background: var(--color-quote-bg);
+}
+
+.search-history-chip-text {
+  font-size: 24rpx;
+  color: var(--color-text-secondary);
 }
 
 .search-results {
@@ -3317,6 +3742,15 @@ const scrollToBottom = () => {
   transform: scale(0.9);
 }
 
+/* 消息列表区：独立成层，"回到底部"按钮锚定此区域（面板展开也始终位于其上） */
+.list-area {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 /* 消息列表 */
 .message-list {
   flex: 1;
@@ -3330,6 +3764,18 @@ const scrollToBottom = () => {
 .load-more {
   text-align: center;
   padding: 24rpx 0;
+  display: flex;
+  justify-content: center;
+}
+
+/* 历史消息翻页加载 spinner（与全局 loading 视觉一致） */
+.load-more-spinner {
+  width: 36rpx;
+  height: 36rpx;
+  border: 4rpx solid var(--color-border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: msg-status-spin 1s linear infinite;
 }
 
 .load-more-text {
@@ -3363,6 +3809,11 @@ const scrollToBottom = () => {
   position: relative;
   margin-bottom: 28rpx;
   width: 100%;
+}
+
+/* 连续消息（同发送者同组）：收紧间距，形成微信式消息组节奏 */
+.message-item--grouped {
+  margin-bottom: 10rpx;
 }
 
 /* ========== 多选消息 ========== */
@@ -3402,6 +3853,7 @@ const scrollToBottom = () => {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-top: 1rpx solid var(--color-border);
+  flex-shrink: 0;
 }
 
 .ms-count {
@@ -3453,9 +3905,9 @@ const scrollToBottom = () => {
   margin-bottom: 0;
 }
 
-/* 底部占位：最后一条消息与输入框之间的间隙 */
+/* 底部占位：最后一条消息与输入框之间的间隙（贴底后呼吸感） */
 .msg-bottom {
-  height: 24rpx;
+  height: 40rpx;
 }
 
 .message-row {
@@ -3562,6 +4014,12 @@ const scrollToBottom = () => {
   color: #FFFFFF;
 }
 
+/* 纯表情消息：微信式大表情（56rpx），小表情挤在 30rpx 文字里观感极差 */
+.bubble-text-emoji {
+  font-size: 56rpx;
+  line-height: 1.35;
+}
+
 .bubble-image {
   max-width: 100%;
   min-height: 120rpx;
@@ -3570,6 +4028,15 @@ const scrollToBottom = () => {
   /* 加载期间以中性底色占位，避免空白闪现 */
   background: var(--color-quote-bg);
   min-width: 200rpx;
+  /* 超高长图截断（微信式缩略图），点击进预览看全图 */
+  max-height: 480rpx;
+  overflow: hidden;
+}
+
+/* 截断时保持裁切填充而非压扁变形 */
+.bubble-image :deep(img),
+.bubble-image img {
+  object-fit: cover;
 }
 
 .bubble-video {
@@ -3679,6 +4146,33 @@ const scrollToBottom = () => {
 /* ========== 转发弹窗 ========== */
 .forward-list {
   max-height: 460rpx;
+}
+
+/* 转发目标搜索框 */
+.forward-search {
+  display: flex;
+  align-items: center;
+  gap: 10rpx;
+  height: 64rpx;
+  padding: 0 20rpx;
+  margin-bottom: 12rpx;
+  background: var(--color-input-bg);
+  border-radius: 999rpx;
+}
+
+.forward-search-input {
+  flex: 1;
+  height: 100%;
+  font-size: 26rpx;
+  color: var(--color-text-primary);
+}
+
+.forward-search-placeholder {
+  color: var(--color-text-tertiary);
+}
+
+.forward-search-clear {
+  padding: 8rpx;
 }
 
 .forward-item {
@@ -3807,6 +4301,23 @@ const scrollToBottom = () => {
   padding: 10rpx 4rpx;
 }
 
+/* 成员头像容器（承载在线状态绿点） */
+.gi-member-avatar {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.gi-member-online {
+  position: absolute;
+  right: -2rpx;
+  bottom: -2rpx;
+  width: 18rpx;
+  height: 18rpx;
+  border-radius: 50%;
+  background: var(--color-success);
+  border: 3rpx solid var(--color-card-solid);
+}
+
 .gi-member-name {
   flex: 1;
   font-size: 27rpx;
@@ -3861,10 +4372,11 @@ const scrollToBottom = () => {
 }
 
 /* 语音消息气泡 */
-/* 消息行头像按钮（群聊快捷 @ 的点击区，自己头像无交互） */
+/* 消息行头像按钮（群聊快捷 @ / 私聊看大图的点击区，群聊自己头像无交互） */
 .msg-avatar-btn {
   flex-shrink: 0;
   border-radius: 20rpx;
+  cursor: pointer;
 }
 
 .msg-avatar-btn--plain {
@@ -3895,9 +4407,20 @@ const scrollToBottom = () => {
   white-space: nowrap;
 }
 
-/* 语音条播放进度填充线 */
-.voice-progress {
+/* 语音未读红点：未听过的语音右上角提示，播放后消失 */
+.voice-unread-dot {
   position: absolute;
+  right: -6rpx;
+  top: -6rpx;
+  width: 16rpx;
+  height: 16rpx;
+  border-radius: 50%;
+  background: var(--color-primary);
+  box-shadow: 0 0 6rpx rgba(255, 107, 107, 0.6);
+}
+
+/* 语音条播放进度填充线 */
+.voice-progress {  position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
@@ -3979,6 +4502,7 @@ const scrollToBottom = () => {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-top: 1rpx solid var(--color-border);
+  flex-shrink: 0;
 }
 
 .recording-indicator {
@@ -4139,6 +4663,8 @@ const scrollToBottom = () => {
   -webkit-backdrop-filter: blur(20px);
   border-top: 1rpx solid var(--color-border);
   z-index: 90;
+  /* 与表情/功能面板同理：候选列表不可被压缩截断 */
+  flex-shrink: 0;
 }
 
 .mention-picker-title {
@@ -4180,11 +4706,11 @@ const scrollToBottom = () => {
   color: var(--color-text-tertiary);
 }
 
-/* 回到底部悬浮按钮 */
+/* 回到底部悬浮按钮（锚定消息区底部） */
 .scroll-bottom-btn {
   position: absolute;
   right: 24rpx;
-  bottom: 220rpx;
+  bottom: 24rpx;
   z-index: 90;
   padding: 14rpx 28rpx;
   background: var(--color-nav);
@@ -4231,6 +4757,13 @@ const scrollToBottom = () => {
   -webkit-backdrop-filter: blur(20px);
   border-top: none;
   gap: 14rpx;
+  /* 视口高度紧张（移动端地址栏/软键盘）时禁止被 flex 压缩，收缩全由消息列表承担 */
+  flex-shrink: 0;
+}
+
+/* 面板展开时：安全区改由面板承接，输入栏恢复普通底距（避免双份间距） */
+.input-bar--panel-open {
+  padding-bottom: 20rpx;
 }
 
 /* 输入栏顶部渐隐分隔线 */
@@ -4244,18 +4777,22 @@ const scrollToBottom = () => {
   background: linear-gradient(90deg, transparent, var(--color-border) 18%, var(--color-border) 82%, transparent);
 }
 
-/* 表情面板：输入栏上方的玻璃拟态网格 */
+/* 表情面板：输入栏下方（微信式），底部承接安全区 */
 .emoji-panel {
   display: flex;
   flex-direction: column;
   gap: 8rpx;
   padding: 20rpx 24rpx;
+  padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
   background: var(--color-nav);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-top: 1rpx solid var(--color-border);
-  max-height: 320rpx;
+  /* 约可显示 5 行表情（80rpx/行），减少 48 个表情的滚动成本 */
+  max-height: 420rpx;
   overflow-y: auto;
+  /* 面板展开时高度不可被压缩（否则底行表情被截半），由消息列表让位 */
+  flex-shrink: 0;
 }
 
 /* 分区（最近使用 / 全部表情）：无最近使用时不渲染分区结构，保持原有平铺 */
@@ -4285,11 +4822,17 @@ const scrollToBottom = () => {
   justify-content: center;
   font-size: 44rpx;
   border-radius: 12rpx;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, transform 0.15s ease;
 }
 
 .emoji-item:active {
   background: var(--color-bg);
+}
+
+/* 桌面 hover：表情放大预览，点选更精准 */
+.emoji-item:hover {
+  background: var(--color-quote-bg);
+  transform: scale(1.25);
 }
 
 .emoji-btn {
@@ -4297,15 +4840,23 @@ const scrollToBottom = () => {
   line-height: 1;
 }
 
-/* 功能面板：宫格入口 */
+/* 面板互换（表情↔功能）时跳过动画：文档流面板先后离场/入场会产生"空一下" */
+.panel-none-enter-active,
+.panel-none-leave-active {
+  transition: none;
+}
+
+/* 功能面板：宫格入口（微信式：位于输入栏下方，底部承接安全区） */
 .action-panel {
   display: flex;
   gap: 30rpx;
   padding: 36rpx 40rpx;
+  padding-bottom: calc(36rpx + env(safe-area-inset-bottom));
   background: var(--color-nav);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border-top: 1rpx solid var(--color-border);
+  flex-shrink: 0;
 }
 
 .action-panel-item {
@@ -4358,6 +4909,11 @@ const scrollToBottom = () => {
 
 .action-btn:active {
   transform: scale(0.92);
+}
+
+/* 面板展开时按钮激活态：浅品牌底明示当前模式 */
+.action-btn--active {
+  background: rgba(255, 107, 107, 0.14);
 }
 
 .input-wrapper {
@@ -4554,6 +5110,16 @@ const scrollToBottom = () => {
   color: rgba(255, 255, 255, 0.7);
 }
 
+/* 引用块内的被回复图片缩略图 */
+.reply-thumb {
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: 10rpx;
+  flex-shrink: 0;
+  margin-left: 8rpx;
+  background: var(--color-quote-bg);
+}
+
 /* ========== 消息折叠 ========== */
 .bubble-content {
   overflow: hidden;
@@ -4583,6 +5149,13 @@ const scrollToBottom = () => {
 @keyframes msgHighlight {
   0% { background-color: rgba(255, 214, 102, 0.4); }
   100% { background-color: transparent; }
+}
+
+/* 首屏消息加载态：居中 spinner */
+.initial-loading {
+  display: flex;
+  justify-content: center;
+  padding: 120rpx 0;
 }
 
 /* ========== 空会话快捷打招呼 ========== */
