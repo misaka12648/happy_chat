@@ -4,8 +4,8 @@
     <view v-if="call.isVideo" class="call-video"></view>
     <view v-if="call.isVideo && call.localStream" class="call-video-local"></view>
 
-    <!-- 语音通话 / 无远端画面时：对方头像 -->
-    <view v-if="!call.isVideo || !call.remoteStream" class="call-audio-face">
+    <!-- 语音通话 / 无远端画面时：对方头像（振铃等待时带扩散脉冲环，呼应铃声节奏） -->
+    <view v-if="!call.isVideo || !call.remoteStream" class="call-audio-face" :class="{ 'call-audio-face--ringing': call.status === 'incoming' || call.status === 'outgoing' }">
       <AppAvatar
         :src="getMediaUrl((contactsStore.friends.find(x => x._id === call.peerId) || call.peerInfo).avatar)"
         :background="getAvatarGradient(call.peerInfo.nickname ? call.peerInfo : { nickname: peerName })"
@@ -171,6 +171,28 @@ const stateText = computed(() => {
   margin-top: 220rpx;
   position: relative;
   z-index: 1;
+  border-radius: 50%;
+}
+
+/* 振铃等待：头像外两道错相位扩散环（来电/去电一致的"等待接听"信号） */
+.call-audio-face--ringing::before,
+.call-audio-face--ringing::after {
+  content: '';
+  position: absolute;
+  inset: -6rpx;
+  border-radius: 50%;
+  border: 3rpx solid rgba(255, 107, 107, 0.45);
+  animation: callRing 1.8s ease-out infinite;
+  pointer-events: none;
+}
+
+.call-audio-face--ringing::after {
+  animation-delay: 0.9s;
+}
+
+@keyframes callRing {
+  0% { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(1.5); opacity: 0; }
 }
 
 .call-info {

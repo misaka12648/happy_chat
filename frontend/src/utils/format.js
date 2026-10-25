@@ -44,7 +44,7 @@ export const getAvatarText = (user) => {
 };
 
 /**
- * 会话列表时间：刚刚 / x分钟前 / 今日 HH:mm / 昨天 HH:mm / 星期X / M/D。
+ * 会话列表时间：刚刚 / x分钟前 / 今日 HH:mm / 昨天 HH:mm / 星期X / M/D / 跨年 YYYY/M/D。
  */
 export const formatListTime = (time) => {
   if (!time) return '';
@@ -61,17 +61,30 @@ export const formatListTime = (time) => {
   const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const days = Math.round((dayStart(now) - dayStart(date)) / 86400000);
   if (days < 7) return '星期' + '日一二三四五六'[date.getDay()];
+  // 跨年日期补年份，避免"3/5"分不清是哪一年
+  if (date.getFullYear() !== now.getFullYear()) {
+    return date.getFullYear() + '/' + (date.getMonth() + 1) + '/' + date.getDate();
+  }
   return (date.getMonth() + 1) + '/' + date.getDate();
 };
 
 /**
- * 聊天时间分隔：今日 HH:mm / M月D日 HH:mm。
+ * 聊天时间分隔（微信式分档）：今日 HH:mm / 昨天 HH:mm / 本周 星期X HH:mm /
+ * M月D日 HH:mm / 跨年 YYYY年M月D日 HH:mm。
  */
 export const formatMessageTime = (time) => {
   const date = new Date(time);
   const now = new Date();
-  const isToday = date.toDateString() === now.toDateString();
   const hm = date.getHours().toString().padStart(2, '0') + ':' + date.getMinutes().toString().padStart(2, '0');
-  if (isToday) return hm;
+  if (date.toDateString() === now.toDateString()) return hm;
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return '昨天 ' + hm;
+  const dayStart = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const days = Math.round((dayStart(now) - dayStart(date)) / 86400000);
+  if (days < 7) return '星期' + '日一二三四五六'[date.getDay()] + ' ' + hm;
+  if (date.getFullYear() !== now.getFullYear()) {
+    return date.getFullYear() + '年' + (date.getMonth() + 1) + '月' + date.getDate() + '日 ' + hm;
+  }
   return (date.getMonth() + 1) + '月' + date.getDate() + '日 ' + hm;
 };
