@@ -23,14 +23,14 @@
       </view>
     </view>
 
-    <!-- 好友请求通知 -->
-    <view v-if="pendingRequests.length > 0" class="section">
+    <!-- 好友请求通知（visibleRequests = store 请求 - 本地已拒绝，拒绝不改 store） -->
+    <view v-if="visibleRequests.length > 0" class="section">
       <view class="section-header">
         <text class="section-title">好友请求</text>
-        <uni-badge :text="pendingRequests.length" type="error" :custom-style="{ backgroundColor: '#FF6B6B', border: 'none' }" />
+        <uni-badge :text="visibleRequests.length" type="error" :custom-style="{ backgroundColor: '#FF6B6B', border: 'none' }" />
       </view>
       <view class="request-list">
-        <view v-for="req in pendingRequests" :key="req._id" class="request-item">
+        <view v-for="req in visibleRequests" :key="req._id" class="request-item">
           <view class="request-info">
             <AppAvatar
               :src="getMediaUrl(req.requester.avatar)"
@@ -46,23 +46,38 @@
               <text class="request-time">请求添加你为好友 · {{ relativeShort(req.createdAt) }}</text>
             </view>
           </view>
-          <GradientButton
-            variant="success"
-            text="接受"
-            padding="12rpx 28rpx"
-            radius="12rpx"
-            font-size="24rpx"
-            :active-scale="0.95"
-            @click="acceptRequest(req._id)"
-          />
+          <view class="request-actions">
+            <GradientButton
+              variant="success"
+              text="接受"
+              padding="12rpx 28rpx"
+              radius="12rpx"
+              font-size="24rpx"
+              :active-scale="0.95"
+              :disabled="rejectingId === req._id"
+              @click="acceptRequest(req._id)"
+            />
+            <!-- 拒绝：次要胶囊（浅灰底红字），视觉弱于接受；进行中显示 … 并禁点防重复提交 -->
+            <view
+              class="request-reject"
+              :class="{ rejecting: rejectingId === req._id }"
+              @click="rejectRequest(req._id)"
+            >
+              <text class="request-reject-text">{{ rejectingId === req._id ? '…' : '拒绝' }}</text>
+            </view>
+          </view>
         </view>
       </view>
     </view>
 
-    <!-- 搜索结果 -->
-    <view v-if="searchResults.length > 0" class="section">
+    <!-- 搜索结果（搜索中也展示本区，让 spinner 可见；无结果且不搜索时隐藏） -->
+    <view v-if="searchResults.length > 0 || searchSearching" class="section">
       <view class="section-header">
-        <text class="section-title">搜索结果</text>
+        <view class="section-title-wrap">
+          <text class="section-title">搜索结果</text>
+          <!-- 搜索进行中的小 spinner（防抖等待 + 请求期间均显示） -->
+          <view v-if="searchSearching" class="search-spinner"></view>
+        </view>
       </view>
       <view class="user-list">
         <view v-for="user in searchResults" :key="user._id" class="user-item">
@@ -169,14 +184,27 @@
       </view>
     </view>
 
-    <!-- 右侧字母索引条（好友较多时展示，点击跳组） -->
-    <view v-if="groupedFriends.length > 1" class="letter-index">
+    <!-- 右侧字母索引条（好友较多时展示，支持点击与触摸滑动选择，微信通讯录式） -->
+    <view
+      v-if="groupedFriends.length > 1"
+      class="letter-index"
+      @touchstart="onIndexTouchStart"
+      @touchmove.prevent="onIndexTouchMove"
+      @touchend="onIndexTouchEnd"
+      @mousedown="onIndexMouseDown"
+    >
       <text
         v-for="g in groupedFriends"
         :key="'idx-' + g.letter"
         class="letter-index-item"
+        :data-letter="g.letter"
         @click="scrollToGroup(g.letter)"
       >{{ g.letter }}</text>
+    </view>
+
+    <!-- 滑动选择字母时屏幕中央的大字母提示浮层（微信式） -->
+    <view class="letter-toast" :class="{ show: indexToastLetter }">
+      <text class="letter-toast-text">{{ indexToastLetter }}</text>
     </view>
 
     <!-- 删除好友确认弹窗 -->
@@ -298,7 +326,7 @@
 
 <script setup>
 import CallOverlay from '@/components/CallOverlay/CallOverlay.vue';
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, watch, onMounted } from 'vue';
 import { onShow } from '@dcloudio/uni-app';
 import { get, post, put, del } from '@/utils/request';
 import { useUserStore } from '@/store/user';
@@ -320,6 +348,15 @@ const searchResults = ref([]);
 // 好友与好友请求已迁入 Pinia（contactsStore），统一缓存 + TTL + 三态
 const friends = computed(() => contactsStore.friends);
 const pendingRequests = computed(() => contactsStore.pendingRequests);
+
+// ========== 拒绝好友请求的本地状态 ==========
+// 已拒绝的请求只做本地隐藏：不能直接改 store 的 pendingRequests 数组引用，
+// 用 Set 记录拒绝过的 id，渲染层过滤；刷新后后端已删掉该请求，集合无需持久化
+const rejectedIds = ref(new Set());
+// 正在拒绝的请求 id：进行中禁用该条"接受/拒绝"两个按钮并让拒绝按钮显示 …，防重复提交
+const rejectingId = ref('');
+// 视图实际渲染的请求列表 = store 请求 - 本地已拒绝
+const visibleRequests = computed(() => pendingRequests.value.filter(r => !rejectedIds.value.has(r._id)));
 
 // ========== 好友拼音分组（微信通讯录式） ==========
 // 中文按拼音排序（Intl.Collator）；注意部分 ICU 实现把汉字整体排在拉丁字母之前，
@@ -367,6 +404,78 @@ const scrollToGroup = (letter) => {
   // #ifdef H5
   const el = document.getElementById('friend-group-' + letter);
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // #endif
+};
+
+// ========== 字母索引条触摸滑动选择（微信通讯录式） ==========
+// 中央大字母提示浮层当前展示的字母，空串即隐藏（配合 .show 过渡淡入淡出）
+const indexToastLetter = ref('');
+let indexToastTimer = null;
+
+// 展示浮层并在 300ms 无新命中后自动淡出（滑动过程中每次命中都会重置计时）
+const showIndexToast = (letter) => {
+  indexToastLetter.value = letter;
+  clearTimeout(indexToastTimer);
+  indexToastTimer = setTimeout(() => { indexToastLetter.value = ''; }, 300);
+};
+
+// 命中手指坐标下的字母：H5 下 uni-text 内部还有一层 span，elementFromPoint
+// 可能命中内层元素，需要沿祖先链向上找携带 data-letter 的节点
+// #ifdef H5
+const letterFromPoint = (clientX, clientY) => {
+  let el = document.elementFromPoint(clientX, clientY);
+  while (el && el !== document.body) {
+    if (el.dataset && el.dataset.letter) return el.dataset.letter;
+    el = el.parentElement;
+  }
+  return '';
+};
+// #endif
+
+// 滑动到某字母：滚动 + 中央提示
+// #ifdef H5
+const selectLetterAt = (clientX, clientY) => {
+  const letter = letterFromPoint(clientX, clientY);
+  if (letter) {
+    scrollToGroup(letter);
+    showIndexToast(letter);
+  }
+};
+// #endif
+
+const onIndexTouchStart = (e) => {
+  // #ifdef H5
+  const t = e.touches[0];
+  selectLetterAt(t.clientX, t.clientY);
+  // #endif
+};
+
+// .prevent 修饰符在模板上阻止页面跟随滚动；move 持续命中实现滑动选择
+const onIndexTouchMove = (e) => {
+  // #ifdef H5
+  const t = e.touches[0];
+  selectLetterAt(t.clientX, t.clientY);
+  // #endif
+};
+
+// 手指抬起：再给 300ms 缓冲淡出，避免浮层闪隐
+const onIndexTouchEnd = () => {
+  clearTimeout(indexToastTimer);
+  indexToastTimer = setTimeout(() => { indexToastLetter.value = ''; }, 300);
+};
+
+// 桌面端顺带支持鼠标拖拽：按下后挂全局 move/up，抬起时务必解绑，避免监听泄漏
+const onIndexMouseDown = (e) => {
+  // #ifdef H5
+  selectLetterAt(e.clientX, e.clientY);
+  const onMove = (ev) => selectLetterAt(ev.clientX, ev.clientY);
+  const onUp = () => {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    onIndexTouchEnd();
+  };
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
   // #endif
 };
 
@@ -430,6 +539,9 @@ onMounted(() => {
   }
   contactsStore.fetchContacts();
 
+  // 消息列表页"+"发起群聊：切到本页后直达建群弹窗
+  uni.$on('open-group-modal', openGroupModal);
+
   // 监听好友申请通知
   wsClient.on('FRIEND_REQUEST', (data) => {
     uni.showToast({ title: '收到新的好友申请', icon: 'none' });
@@ -465,18 +577,54 @@ onShow(() => {
   contactsStore.fetchContacts();
 });
 
-const searchUsers = async () => {
-  if (!searchKeyword.value.trim()) return;
+// ========== 搜索：防抖 400ms 即时搜索 ==========
+const searchSearching = ref(false); // 搜索中标记（结果标题旁小 spinner）
+let searchTimer = null;
+
+// 真正发请求的公共实现：kw 为发起时的关键词，返回时与最新值比对丢弃过期响应
+const runSearch = async (kw) => {
+  searchSearching.value = true;
   try {
-    const res = await get('/api/users/search', { keyword: searchKeyword.value });
-    if (res.code === 200) {
+    const res = await get('/api/users/search', { keyword: kw });
+    // 等待期间关键词可能又变了，只有仍一致才采纳结果，防止过期响应覆盖新结果
+    if (res.code === 200 && kw === searchKeyword.value.trim()) {
       searchResults.value = res.data;
     }
   } catch (e) {
     // 错误提示已由请求层统一处理
     console.error('搜索失败:', e);
+  } finally {
+    // 仅当没有更新的关键词在等待时才熄灭 spinner，避免新一次搜索中途被旧响应关闭
+    if (kw === searchKeyword.value.trim()) searchSearching.value = false;
   }
 };
+
+// 回车/点搜索按钮：清掉防抖计时器立即执行
+const searchUsers = () => {
+  clearTimeout(searchTimer);
+  const kw = searchKeyword.value.trim();
+  if (!kw) {
+    searchResults.value = [];
+    searchSearching.value = false;
+    return;
+  }
+  runSearch(kw);
+};
+
+// 输入即搜：400ms 防抖；清空关键词时清掉旧结果并停止搜索
+watch(searchKeyword, (kw) => {
+  clearTimeout(searchTimer);
+  const q = kw.trim();
+  if (!q) {
+    searchResults.value = [];
+    searchSearching.value = false;
+    return;
+  }
+  searchSearching.value = true;
+  searchTimer = setTimeout(() => {
+    runSearch(q);
+  }, 400);
+});
 
 const sendFriendRequest = async (userId) => {
   try {
@@ -501,6 +649,25 @@ const acceptRequest = async (friendshipId) => {
   } catch (e) {
     // 失败提示已由请求层统一处理
     console.error('接受好友请求失败:', e);
+  }
+};
+
+// 拒绝好友请求：静默调用接口，成功后仅本地标记隐藏（见 rejectedIds 注释）
+const rejectRequest = async (friendshipId) => {
+  // 已有拒绝在进行中则忽略，防重复点击
+  if (rejectingId.value) return;
+  rejectingId.value = friendshipId;
+  try {
+    const res = await post('/api/friends/reject', { friendshipId }, { silent: true });
+    if (res.code === 200) {
+      uni.showToast({ title: '已拒绝', icon: 'none' });
+      rejectedIds.value.add(friendshipId);
+    }
+  } catch (e) {
+    // 静默请求不弹请求层错误，这里也不额外打断用户
+    console.error('拒绝好友请求失败:', e);
+  } finally {
+    rejectingId.value = '';
   }
 };
 
@@ -1044,7 +1211,7 @@ const cardDeleteFriend = () => {
   letter-spacing: 2rpx;
 }
 
-/* 右侧字母索引条：垂直居中悬浮，点击跳组 */
+/* 右侧字母索引条：垂直居中悬浮，支持点击与滑动跳组 */
 .letter-index {
   position: fixed;
   right: 6rpx;
@@ -1062,6 +1229,9 @@ const cardDeleteFriend = () => {
   border: 1rpx solid var(--glass-border);
   box-shadow: var(--shadow-sm);
   z-index: 50;
+  /* 滑动/拖拽选择字母时避免浏览器触发文本选中 */
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .letter-index-item {
@@ -1133,5 +1303,87 @@ const cardDeleteFriend = () => {
 .friend-status {
   font-size: 22rpx;
   color: var(--color-text-tertiary);
+}
+
+/* 请求操作区：接受 + 拒绝并排 */
+.request-actions {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+/* 拒绝按钮：自绘次要胶囊（浅灰底红字），视觉弱于渐变的"接受" */
+.request-reject {
+  padding: 12rpx 28rpx;
+  background: var(--color-quote-bg);
+  border-radius: 999rpx;
+  transition: all 0.2s ease;
+}
+
+.request-reject:active {
+  transform: scale(0.95);
+}
+
+/* 拒绝进行中：置灰并禁点，与"接受"按钮一起防重复提交 */
+.request-reject.rejecting {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.request-reject-text {
+  font-size: 24rpx;
+  font-weight: 600;
+  color: var(--color-error);
+}
+
+/* 搜索结果标题行：标题 + 小 spinner 排布 */
+.section-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
+/* 搜索中的小 spinner：16rpx 圆环，珊瑚色上缘旋转（与全局 loading 同风格） */
+.search-spinner {
+  width: 16rpx;
+  height: 16rpx;
+  border: 3rpx solid var(--color-border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: search-spin 0.8s linear infinite;
+}
+
+@keyframes search-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* 滑动索引时屏幕中央的大字母提示浮层（微信式） */
+.letter-toast {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 120rpx;
+  height: 120rpx;
+  border-radius: 28rpx;
+  background: rgba(50, 50, 52, 0.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none; /* 纯提示层，不响应任何点击 */
+  transition: opacity 0.15s ease;
+  z-index: 999;
+}
+
+.letter-toast.show {
+  opacity: 1;
+}
+
+.letter-toast-text {
+  font-size: 60rpx;
+  font-weight: 700;
+  color: #FFFFFF;
+  line-height: 1;
 }
 </style>
