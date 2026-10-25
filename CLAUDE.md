@@ -61,6 +61,7 @@ frontend/src/
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | /api/auth/register | 注册（密码经 `HC_` 编码传输，见 4.4） |
+| GET | /api/auth/check-username?username= | 注册页用户名可用性检查 |
 | POST | /api/auth/login | 登录 |
 | POST | /api/auth/refresh | refresh token 换新（滑动续期，同时下发新 refresh） |
 | GET/PUT | /api/users/me | 当前用户信息 / 更新昵称头像 |
@@ -69,6 +70,7 @@ frontend/src/
 | GET | /api/users/:id | 指定用户信息 |
 | POST | /api/friends/request | 发送好友申请 |
 | POST | /api/friends/accept | 接受申请 |
+| POST | /api/friends/reject | 拒绝申请（状态置 REJECTED，不通知发起方） |
 | GET | /api/friends/requests | 收到的申请列表 |
 | GET | /api/friends | 好友列表 |
 | DELETE | /api/friends/:friendId | 删除好友（对方收到 FRIEND_REMOVED 通知） |

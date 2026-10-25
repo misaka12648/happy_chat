@@ -115,6 +115,42 @@ router.post('/accept', async (req, res) => {
 });
 
 /**
+ * POST /api/friends/reject
+ * 拒绝好友请求：仅接收者可操作，状态置为 REJECTED（不通知发起方，与微信行为一致）
+ */
+router.post('/reject', async (req, res) => {
+  try {
+    const { friendshipId } = req.body;
+
+    if (!friendshipId || !mongoose.Types.ObjectId.isValid(friendshipId)) {
+      return fail(res, 400, '好友请求 ID 无效');
+    }
+
+    const friendship = await Friendship.findById(friendshipId);
+
+    if (!friendship) {
+      return fail(res, 404, '好友请求不存在');
+    }
+
+    if (friendship.recipient.toString() !== req.user._id.toString()) {
+      return fail(res, 403, '你无权拒绝此请求');
+    }
+
+    if (friendship.status !== 'PENDING') {
+      return fail(res, 400, '该请求已被处理');
+    }
+
+    friendship.status = 'REJECTED';
+    await friendship.save();
+
+    ok(res, null, '已拒绝好友请求');
+  } catch (error) {
+    console.error('拒绝好友请求错误:', error);
+    fail(res, 500, '服务器内部错误');
+  }
+});
+
+/**
  * GET /api/friends/requests
  * 获取收到的好友请求列表
  */
