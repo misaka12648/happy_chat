@@ -187,6 +187,9 @@ export const useUserStore = defineStore('user', {
     logout() {
       wsClient.disconnect();
 
+      // 通话中退出登录：释放摄像头/麦克风与 WebRTC 资源，覆盖层随状态归位消失
+      useCallStore()._cleanup();
+
       // 重置标题/favicon（登出前可能带未读角标）
       resetTitleBadge();
 

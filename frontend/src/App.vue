@@ -86,8 +86,8 @@ export default {
     },
     handleRefresh() {
       this.showUpdateModal = false;
-      uni.clearStorageSync();
-      // 添加时间戳强制刷新，避免缓存
+      // 只加时间戳强制绕过 HTTP 缓存即可，不清本地存储：
+      // 主题/通知开关/聊天草稿/表情与搜索历史都是用户数据，清掉等于刷新一次丢一次
       const url = new URL(window.location.href);
       url.searchParams.set('_t', Date.now());
       window.location.href = url.toString();
@@ -209,9 +209,10 @@ html.dark {
   --color-border: rgba(255, 255, 255, 0.1);
 
   --color-nav: rgba(30, 30, 43, 0.95);
-  --color-bubble: rgba(56, 56, 72, 0.92);
+  /* 气泡底比页面底亮两档：纯 emoji/短消息的小气泡在深色下也要有明确轮廓 */
+  --color-bubble: rgba(63, 63, 82, 0.94);
   --color-modal: #2A2A38;
-  --glass-border: rgba(255, 255, 255, 0.12);
+  --glass-border: rgba(255, 255, 255, 0.14);
   --color-bg-gradient: linear-gradient(135deg, #1A1A24 0%, #14141C 100%);
   --color-time-badge: rgba(255, 255, 255, 0.1);
   --color-quote-bg: rgba(255, 255, 255, 0.07);
